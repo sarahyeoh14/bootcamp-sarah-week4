@@ -152,7 +152,7 @@ export default function MarketingClient({ recommendations, actOnRate, actedOnCou
                       {/* Links */}
                       <div className="mt-2 flex items-center gap-3">
                         <Link
-                          href={`/dashboard/cohorts/${rec.cohort_type === 'ml' ? rec.cohort_id : rec.cohort_id}`}
+                          href={`/dashboard/cohorts/${rec.cohort_type === 'ml' ? `ml-${rec.cohort_id}` : `rule-${rec.cohort_id}`}`}
                           className="text-xs text-violet-600 hover:text-violet-800 font-medium transition-colors flex items-center gap-1"
                         >
                           View cohort
@@ -161,7 +161,7 @@ export default function MarketingClient({ recommendations, actOnRate, actedOnCou
                           </svg>
                         </Link>
                         <Link
-                          href={`/dashboard/cohorts/${rec.cohort_id}`}
+                          href={`/dashboard/cohorts/${rec.cohort_type === 'ml' ? `ml-${rec.cohort_id}` : `rule-${rec.cohort_id}`}`}
                           className="text-xs text-gray-400 hover:text-gray-600 transition-colors flex items-center gap-1"
                         >
                           View forecast

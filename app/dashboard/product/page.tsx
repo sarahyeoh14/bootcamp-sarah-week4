@@ -3,6 +3,15 @@ import { getPipelineStatus } from '@/lib/pipeline-status';
 import { getRankedPlannedReleases, computeForecastAccuracy } from '@/lib/releases';
 import { getAllReleases } from '@/lib/db';
 import DashboardHeader from '@/components/DashboardHeader';
+import {
+  getRecommendationsByRole,
+  getActOnStats,
+  getTopWinsFromPastReleases,
+  ensureRecommendationsTable,
+  expireStaleRecommendations,
+  seedRecommendationsIfEmpty,
+} from '@/lib/recommendations';
+import ProductClient from './ProductClient';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,6 +21,14 @@ export default function ProductDashboard() {
   const allReleases = getAllReleases();
   const pastReleases = allReleases.filter(r => r.status === 'released');
   const accuracy = computeForecastAccuracy();
+
+  ensureRecommendationsTable();
+  expireStaleRecommendations();
+  seedRecommendationsIfEmpty();
+
+  const recommendations = getRecommendationsByRole('product');
+  const stats = getActOnStats();
+  const topWins = getTopWinsFromPastReleases(3);
 
   return (
     <div className="min-h-full">
@@ -102,6 +119,8 @@ export default function ProductDashboard() {
                 const score = item.netCohortImpactScore;
                 const isPos = score > 0;
                 const isNeg = score < 0;
+                // Top impacted cohort = the cohort with highest forecasted impact
+                const topCohort = item.cohortForecasts[0];
                 return (
                   <li key={item.release.id}>
                     <Link
@@ -115,7 +134,13 @@ export default function ProductDashboard() {
                         <div className="text-sm font-medium text-gray-900 group-hover:text-violet-700 transition-colors truncate">
                           {item.release.name}
                         </div>
-                        <div className="text-xs text-gray-400 truncate">{item.release.description}</div>
+                        <div className="text-xs text-gray-400 truncate">
+                          {topCohort ? (
+                            <span>Top cohort: <span className="font-medium text-gray-600">{topCohort.cohortName}</span></span>
+                          ) : (
+                            item.release.description
+                          )}
+                        </div>
                       </div>
                       <div className="flex-shrink-0 text-right">
                         <span className={`text-sm font-semibold ${isPos ? 'text-emerald-600' : isNeg ? 'text-red-600' : 'text-gray-500'}`}>
@@ -133,6 +158,15 @@ export default function ProductDashboard() {
             </ul>
           )}
         </div>
+
+        {/* Recommendations + Top Wins (client-interactive) */}
+        <ProductClient
+          recommendations={recommendations}
+          topWins={topWins}
+          actOnRate={stats.ratePct}
+          actedOnCount={stats.actedOn}
+          totalCount={stats.total}
+        />
 
         {/* Recent releases */}
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
