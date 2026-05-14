@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Mindvalley Customer Cohorts",
-  description: "Proactive intelligence layer for customer cohort insights",
+  title: "Mission OS",
+  description: "Customer journey intelligence for product teams",
 };
 
 export default function RootLayout({

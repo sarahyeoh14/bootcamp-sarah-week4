@@ -1,4 +1,4 @@
-export type Role = 'Marketing' | 'Content' | 'Product' | 'Admin';
+export type Role = 'Product';
 
 export interface Session {
   name: string;
@@ -9,13 +9,8 @@ export function encodeSession(session: Session): string {
   return Buffer.from(JSON.stringify(session)).toString('base64');
 }
 
-export const VALID_ROLES: Role[] = ['Marketing', 'Content', 'Product', 'Admin'];
+export const VALID_ROLES: Role[] = ['Product'];
 
-export function roleToPath(role: Role): string {
-  switch (role) {
-    case 'Marketing': return '/dashboard/marketing';
-    case 'Content': return '/dashboard/content';
-    case 'Product': return '/dashboard/product';
-    case 'Admin': return '/dashboard/admin';
-  }
+export function roleToPath(_role: Role): string {
+  return '/dashboard';
 }

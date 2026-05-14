@@ -116,6 +116,13 @@ const EVENT_TYPES = [
   'push_notification_open', 'email_open', 'webinar_attended',
 ];
 
+const AI_EVENT_TYPES = [
+  'ai_coaching',
+  'ai_recommendation_click',
+  'ai_quiz_complete',
+  'ai_path_generated',
+];
+
 const EVENT_SOURCES = ['web', 'ios', 'android', 'email', 'push'];
 
 const TIER_NAMES = [
@@ -235,6 +242,33 @@ function ingestEngagementSignals(runId: number, customerIds: string[]) {
   return recordCount;
 }
 
+function ingestAIEngagementSignals(runId: number, customerIds: string[]) {
+  const insert = db.prepare(`
+    INSERT INTO engagement_signals (pipeline_run_id, customer_id, event_type, event_source, event_count, recorded_date)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+
+  // ~20% of customers interact with AI features each run
+  const aiCustomers = customerIds.filter((_, i) => i % 5 === 0);
+  const sources = ['ios', 'android', 'web'];
+
+  const ingestMany = db.transaction(() => {
+    for (const customerId of aiCustomers) {
+      const numEvents = randomInt(1, 4);
+      for (let i = 0; i < numEvents; i++) {
+        const eventType = randomChoice(AI_EVENT_TYPES);
+        const source = randomChoice(sources);
+        const recordedDate = randomDate(30);
+        insert.run(runId, customerId, eventType, source, 1, recordedDate);
+      }
+    }
+  });
+
+  ingestMany();
+  console.log(`  ✓ AI engagement signals: ${aiCustomers.length} AI-active users`);
+  return aiCustomers.length;
+}
+
 function ingestSubscriptionTiers(runId: number, customerIds: string[]) {
   const insert = db.prepare(`
     INSERT INTO subscription_tiers (pipeline_run_id, customer_id, tier_name, tier_level, subscribed_since, renewal_date, is_active)
@@ -273,7 +307,7 @@ async function runPipeline() {
   const runDate = yesterday.toISOString().split('T')[0]; // YYYY-MM-DD of the data being ingested (prior day)
 
   console.log('\n╔══════════════════════════════════════════════════╗');
-  console.log('║  Mindvalley Customer Cohorts — Data Pipeline     ║');
+  console.log('║  Mission OS — Customer Journey Data Pipeline     ║');
   console.log('╚══════════════════════════════════════════════════╝\n');
   console.log(`Run date: ${runDate}`);
   console.log(`Started:  ${now.toISOString()}\n`);
@@ -295,6 +329,7 @@ async function runPipeline() {
     ingestPurchaseHistory(runId, customerIds);
     ingestQuestProgress(runId, customerIds);
     ingestEngagementSignals(runId, customerIds);
+    ingestAIEngagementSignals(runId, customerIds);
     ingestSubscriptionTiers(runId, customerIds);
 
     // Mark as success
