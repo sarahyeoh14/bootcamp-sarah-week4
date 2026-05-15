@@ -2,7 +2,9 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
-const DB_DIR = path.join(process.cwd(), 'data');
+const DB_DIR = process.env.VERCEL
+  ? '/tmp/data'
+  : path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DB_DIR, 'cohorts.db');
 
 let db: Database.Database | null = null;
@@ -18,6 +20,11 @@ export function getDb(): Database.Database {
   db = new Database(DB_PATH);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  db.pragma('synchronous = NORMAL');       // safe in WAL mode, much faster
+  db.pragma('cache_size = -65536');        // 64 MB page cache
+  db.pragma('temp_store = MEMORY');        // temp tables in RAM
+  db.pragma('mmap_size = 268435456');      // 256 MB memory-mapped I/O
+  db.pragma('wal_autocheckpoint = 2000');  // checkpoint every 2000 pages
 
   initSchema(db);
   return db;

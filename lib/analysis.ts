@@ -22,14 +22,10 @@ function pct(n: number, total: number) {
 }
 
 /**
- * Inline subquery that selects the latest-month row per user.
- * Usage: FROM product_data pd JOIN (latest_snapshot) ls ON ...
+ * Single-snapshot dataset — every user has exactly one row (month = '2026-05').
+ * No self-join needed; just filter by month directly for index efficiency.
  */
-const LATEST_SNAPSHOT = `
-  (SELECT pd.* FROM product_data pd
-   INNER JOIN (SELECT auth0_user_id, MAX(month) AS m FROM product_data GROUP BY auth0_user_id) lm
-   ON pd.auth0_user_id = lm.auth0_user_id AND pd.month = lm.m)
-`;
+const LATEST_SNAPSHOT = `(SELECT * FROM product_data WHERE month = '2026-05')`;
 
 // ---------------------------------------------------------------------------
 // 1. Cancellation — why people cancelled
