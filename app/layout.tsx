@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Mission OS",
-  description: "Customer journey intelligence for product teams",
+  title: "Vantage — Product Intelligence",
+  description: "Product intelligence dashboard for the Mindvalley member journey",
 };
 
 export default function RootLayout({

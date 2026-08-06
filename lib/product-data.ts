@@ -25,10 +25,10 @@ import { getDb } from './db';
 const DATA_PATH = path.join(process.cwd(), 'data', 'product_data_full.json');
 
 /** All data treated as this single snapshot month */
-const SNAPSHOT_MONTH = '2026-05';
+const SNAPSHOT_MONTH = '2026-07';
 
-/** "Active in last 30 days" cutoff — 30 days before end of May 2026 */
-const RECENT_CUTOFF = '2026-05-01';
+/** "Active in last 30 days" cutoff — 30 days before end of July 2026 */
+const RECENT_CUTOFF = '2026-07-01';
 
 // ---------------------------------------------------------------------------
 // Types
