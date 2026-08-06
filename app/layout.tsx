@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Vantage — Product Intelligence",
+  title: "Product Intelligence",
   description: "Product intelligence dashboard for the Mindvalley member journey",
 };
 
