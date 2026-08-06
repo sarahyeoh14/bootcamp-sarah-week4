@@ -1,15 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { encodeSession } from '@/lib/auth';
+import { encodeSession, nameFromEmail } from '@/lib/auth';
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
-  const { name } = body;
+  const { email } = body;
 
-  if (!name || typeof name !== 'string' || name.trim().length < 1) {
-    return NextResponse.json({ error: 'Name is required' }, { status: 400 });
+  if (!email || typeof email !== 'string') {
+    return NextResponse.json({ error: 'Email is required' }, { status: 400 });
   }
 
-  const session = { name: name.trim(), role: 'Product' as const };
+  const normalized = email.trim().toLowerCase();
+
+  if (!normalized.endsWith('@mindvalley.com')) {
+    return NextResponse.json(
+      { error: 'Access is restricted to @mindvalley.com email addresses.' },
+      { status: 403 },
+    );
+  }
+
+  const session = {
+    name: nameFromEmail(normalized),
+    email: normalized,
+    role: 'Product' as const,
+  };
   const encoded = encodeSession(session);
 
   const response = NextResponse.json({ ok: true, redirectTo: '/dashboard' });

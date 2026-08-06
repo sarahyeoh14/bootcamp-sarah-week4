@@ -10,7 +10,7 @@ export async function getSession(): Promise<Session | null> {
 
   try {
     const parsed = JSON.parse(Buffer.from(raw, 'base64').toString('utf-8'));
-    if (parsed?.name && parsed?.role) {
+    if (parsed?.name && parsed?.role && parsed?.email) {
       return parsed as Session;
     }
     return null;

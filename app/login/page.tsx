@@ -5,14 +5,20 @@ import { useRouter } from 'next/navigation';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim()) {
-      setError('Please enter your name');
+    const trimmed = email.trim().toLowerCase();
+
+    if (!trimmed) {
+      setError('Please enter your Mindvalley email.');
+      return;
+    }
+    if (!trimmed.endsWith('@mindvalley.com')) {
+      setError('Access is restricted to @mindvalley.com email addresses.');
       return;
     }
 
@@ -23,7 +29,7 @@ export default function LoginPage() {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim() }),
+        body: JSON.stringify({ email: trimmed }),
       });
 
       const data = await res.json();
@@ -58,21 +64,21 @@ export default function LoginPage() {
         {/* Card */}
         <div className="bg-slate-800/60 backdrop-blur border border-slate-700/50 rounded-2xl p-8 shadow-2xl">
           <h2 className="text-base font-semibold text-white mb-1">Welcome back</h2>
-          <p className="text-slate-400 text-sm mb-6">Enter your name to access the product dashboard.</p>
+          <p className="text-slate-400 text-sm mb-6">Sign in with your Mindvalley email to continue.</p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label htmlFor="name" className="block text-sm font-medium text-slate-300 mb-1.5">
-                Your name
+              <label htmlFor="email" className="block text-sm font-medium text-slate-300 mb-1.5">
+                Mindvalley email
               </label>
               <input
-                id="name"
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Sarah Chen"
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@mindvalley.com"
                 className="w-full px-4 py-2.5 rounded-lg bg-slate-700/80 border border-slate-600 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition text-sm"
-                autoComplete="off"
+                autoComplete="email"
                 autoFocus
               />
             </div>
@@ -88,13 +94,13 @@ export default function LoginPage() {
               disabled={loading}
               className="w-full py-2.5 px-4 bg-violet-600 hover:bg-violet-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-lg transition text-sm shadow-lg shadow-violet-900/30"
             >
-              {loading ? 'Entering…' : 'Enter Mission OS'}
+              {loading ? 'Signing in…' : 'Enter Mission OS'}
             </button>
           </form>
         </div>
 
         <p className="text-center text-slate-600 text-xs mt-6">
-          Mindvalley · Product Intelligence — Internal Tool
+          Mindvalley · Internal Tool · @mindvalley.com only
         </p>
       </div>
     </div>
