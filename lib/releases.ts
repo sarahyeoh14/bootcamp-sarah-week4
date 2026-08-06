@@ -86,55 +86,56 @@ export interface RankedPlannedRelease {
 // ---------------------------------------------------------------------------
 
 /**
- * Compute KPI snapshot for a 30-day window starting at `fromDate`.
- * WAU = distinct users with engagement signals in days 1-7 of the window.
- * Retention = % of WAU-week-1 users who also had engagement in days 8-14.
- * Revenue = sum of purchase amounts in the 30-day window.
+ * Compute KPI snapshot for subscribers whose subscription_start_date falls in [fromDate, toDate).
+ * Uses the product_data snapshot (single month) as the source of truth.
+ * WAU  = active subscribers from this cohort who logged in this month (MAU).
+ * Retention = % who made content progress this month.
+ * Revenue  = annualised subscription spend for this cohort.
  */
 function computeKpiForWindow(fromDate: string, toDate: string): KpiSnapshot {
   const db = getDb();
+  const month = (db.prepare(
+    "SELECT MAX(month) as m FROM product_data WHERE subscription_status = 'active'"
+  ).get() as { m: string | null }).m ?? '2026-07';
 
-  // WAU: distinct users active in the first 7 days of this window
-  const wauWindow = addDays(fromDate, 7);
   const wauRow = db.prepare(`
-    SELECT COUNT(DISTINCT customer_id) AS wau
-    FROM engagement_signals
-    WHERE recorded_date >= ? AND recorded_date < ?
-  `).get(fromDate, wauWindow) as { wau: number };
+    SELECT COUNT(*) AS wau
+    FROM product_data
+    WHERE month = ? AND subscription_status = 'active'
+      AND has_login_in_month = 1
+      AND subscription_start_date >= ? AND subscription_start_date < ?
+  `).get(month, fromDate, toDate) as { wau: number };
 
-  // Retention: users active in week 1 who came back in week 2
-  const week2Start = addDays(fromDate, 7);
-  const week2End = addDays(fromDate, 14);
+  const totalRow = db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM product_data
+    WHERE month = ? AND subscription_status = 'active'
+      AND subscription_start_date >= ? AND subscription_start_date < ?
+  `).get(month, fromDate, toDate) as { n: number };
 
-  const week1UsersRows = db.prepare(`
-    SELECT DISTINCT customer_id
-    FROM engagement_signals
-    WHERE recorded_date >= ? AND recorded_date < ?
-  `).all(fromDate, wauWindow) as { customer_id: string }[];
+  const progressRow = db.prepare(`
+    SELECT COUNT(*) AS n
+    FROM product_data
+    WHERE month = ? AND subscription_status = 'active'
+      AND has_progress_in_month = 1
+      AND subscription_start_date >= ? AND subscription_start_date < ?
+  `).get(month, fromDate, toDate) as { n: number };
 
-  const week1Users = week1UsersRows.map(r => r.customer_id);
-  let retentionPct = 0;
-  if (week1Users.length > 0) {
-    const placeholders = week1Users.map(() => '?').join(',');
-    const retainedRow = db.prepare(`
-      SELECT COUNT(DISTINCT customer_id) AS retained
-      FROM engagement_signals
-      WHERE customer_id IN (${placeholders})
-        AND recorded_date >= ? AND recorded_date < ?
-    `).get(...week1Users, week2Start, week2End) as { retained: number };
-    retentionPct = Math.round((retainedRow.retained / week1Users.length) * 100);
-  }
-
-  // Revenue: sum of purchases in the full window
   const revenueRow = db.prepare(`
-    SELECT COALESCE(SUM(amount), 0) AS total
-    FROM purchase_history
-    WHERE purchased_at >= ? AND purchased_at < ?
-  `).get(fromDate, toDate) as { total: number };
+    SELECT COALESCE(SUM(
+      CASE WHEN purchase_price > 0 THEN
+        CASE WHEN LOWER(payment_frequency) = 'monthly' THEN purchase_price * 12.0 ELSE purchase_price END
+      ELSE 0 END
+    ), 0) AS total
+    FROM product_data
+    WHERE month = ? AND subscription_status = 'active'
+      AND subscription_start_date >= ? AND subscription_start_date < ?
+  `).get(month, fromDate, toDate) as { total: number };
 
+  const total = totalRow.n;
   return {
     wau: wauRow.wau,
-    retentionPct,
+    retentionPct: total > 0 ? Math.round((progressRow.n / total) * 100) : 0,
     revenue: Math.round(revenueRow.total * 100) / 100,
   };
 }
@@ -180,9 +181,24 @@ export function computeReleaseKpiComparison(releaseDate: string): KpiComparison 
 // ---------------------------------------------------------------------------
 
 /**
- * For each ML cohort, compare average engagement event count per member
- * in 30 days before vs 30 days after the release date.
- * Rank by delta (impactScore).
+ * Cohort SQL rules — maps ML cohort IDs to product_data WHERE clauses.
+ * "Before" cohort = subscribers who joined before the release date.
+ * "After" cohort  = subscribers who joined after the release date.
+ * Delta in login rate (MAU/MAS) per cohort = impact score.
+ */
+const COHORT_SQL_RULES: Record<string, string> = {
+  'high-value-engaged': "has_login_in_month = 1 AND has_progress_in_month = 1 AND has_used_eve_in_month = 1",
+  'quest-graduates':    "has_login_in_month = 1 AND has_progress_in_month = 1 AND has_used_eve_in_month = 0",
+  'at-risk-disengaged': "has_login_in_month = 0 AND COALESCE(total_tenure_days, 0) > 180",
+  'new-joiners':        "is_new_subscriber = 1",
+  'passive-subscribers':"has_login_in_month = 0 AND COALESCE(total_tenure_days, 0) <= 180 AND is_new_subscriber = 0",
+};
+
+/**
+ * For each ML cohort, compare login rate (MAU/MAS) between:
+ *  - subscribers who joined in the 30 days BEFORE the release date (long-tenured relative to release)
+ *  - subscribers who joined in the 30 days AFTER the release date (newer, post-release onboarding)
+ * Impact score = login rate delta (positive = post-release cohort is more engaged).
  */
 export function computeCohortImpacts(releaseDate: string): CohortImpact[] {
   const db = getDb();
@@ -191,37 +207,40 @@ export function computeCohortImpacts(releaseDate: string): CohortImpact[] {
 
   const beforeStart = addDays(releaseDate, -30);
   const afterEnd = addDays(releaseDate, 30);
+  const month = (db.prepare(
+    "SELECT MAX(month) as m FROM product_data WHERE subscription_status = 'active'"
+  ).get() as { m: string | null }).m ?? '2026-07';
 
   for (const cohort of mlCohorts) {
-    const customerIds = getCustomerIdsForMlCohort(cohort.id);
-    if (customerIds.length === 0) continue;
+    const rule = COHORT_SQL_RULES[cohort.id];
+    if (!rule) continue;
 
-    const placeholders = customerIds.map(() => '?').join(',');
+    const base = `FROM product_data WHERE month = '${month}' AND subscription_status = 'active' AND (${rule})`;
 
-    // Avg engagement per member — before
+    // Count total members in this cohort
+    const memberCount = (db.prepare(`SELECT COUNT(*) AS n ${base}`).get() as { n: number }).n;
+    if (memberCount === 0) continue;
+
+    // "Before": members of this cohort who subscribed before the release (longer tenured relative to release)
     const beforeRow = db.prepare(`
-      SELECT COALESCE(SUM(event_count), 0) AS total
-      FROM engagement_signals
-      WHERE customer_id IN (${placeholders})
-        AND recorded_date >= ? AND recorded_date < ?
-    `).get(...customerIds, beforeStart, releaseDate) as { total: number };
+      SELECT COUNT(*) AS total, SUM(has_login_in_month) AS logged_in
+      ${base} AND subscription_start_date < ?
+    `).get(releaseDate) as { total: number; logged_in: number };
 
-    // Avg engagement per member — after
+    // "After": members of this cohort who subscribed after the release
     const afterRow = db.prepare(`
-      SELECT COALESCE(SUM(event_count), 0) AS total
-      FROM engagement_signals
-      WHERE customer_id IN (${placeholders})
-        AND recorded_date >= ? AND recorded_date < ?
-    `).get(...customerIds, releaseDate, afterEnd) as { total: number };
+      SELECT COUNT(*) AS total, SUM(has_login_in_month) AS logged_in
+      ${base} AND subscription_start_date >= ?
+    `).get(releaseDate) as { total: number; logged_in: number };
 
-    const beforeAvg = customerIds.length > 0 ? beforeRow.total / customerIds.length : 0;
-    const afterAvg = customerIds.length > 0 ? afterRow.total / customerIds.length : 0;
+    const beforeAvg = beforeRow.total > 0 ? (beforeRow.logged_in ?? 0) / beforeRow.total : 0;
+    const afterAvg  = afterRow.total  > 0 ? (afterRow.logged_in  ?? 0) / afterRow.total  : 0;
     const delta = afterAvg - beforeAvg;
-    const impactScore = Math.round(delta * 100) / 100;
+    const impactScore = Math.round(delta * 10000) / 100; // expressed as pp
 
     let direction: 'positive' | 'negative' | 'neutral';
-    if (impactScore > 0.1) direction = 'positive';
-    else if (impactScore < -0.1) direction = 'negative';
+    if (impactScore > 1) direction = 'positive';
+    else if (impactScore < -1) direction = 'negative';
     else direction = 'neutral';
 
     impacts.push({
@@ -230,13 +249,12 @@ export function computeCohortImpacts(releaseDate: string): CohortImpact[] {
       cohortType: 'ml',
       impactScore,
       direction,
-      memberCount: customerIds.length,
-      beforeEngagement: Math.round(beforeAvg * 100) / 100,
-      afterEngagement: Math.round(afterAvg * 100) / 100,
+      memberCount,
+      beforeEngagement: Math.round(beforeAvg * 1000) / 10, // login rate %
+      afterEngagement:  Math.round(afterAvg  * 1000) / 10,
     });
   }
 
-  // Sort by impactScore descending
   impacts.sort((a, b) => b.impactScore - a.impactScore);
   return impacts;
 }

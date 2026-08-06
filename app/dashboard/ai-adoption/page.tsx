@@ -139,6 +139,35 @@ export default function AIAdoptionPage() {
           </div>
         )}
 
+        {/* EVE Quality */}
+        {hasData && d.eveUsers > 0 && (
+          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100">
+              <h2 className="font-semibold text-gray-900">EVE Quality</h2>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Transformations = floor(EVE prompts / 6) — a quality metric for deep engagement
+              </p>
+            </div>
+            <div className="px-5 py-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="p-4 bg-amber-50 rounded-xl">
+                <div className="text-2xl font-bold text-amber-700">{d.eveTransformations.toLocaleString()}</div>
+                <div className="text-sm font-medium text-gray-700 mt-0.5">Total EVE Chat Transformations</div>
+                <div className="text-xs text-gray-400 mt-1">floor(EVE prompts / 6) across all active users</div>
+              </div>
+              <div className="p-4 bg-amber-50 rounded-xl">
+                <div className="text-2xl font-bold text-amber-700">{d.learningAssist.toLocaleString()}</div>
+                <div className="text-sm font-medium text-gray-700 mt-0.5">Learning Assistance Transformations</div>
+                <div className="text-xs text-gray-400 mt-1">Quality learning-assist interactions (cumulative)</div>
+              </div>
+              <div className="p-4 bg-amber-50 rounded-xl">
+                <div className="text-2xl font-bold text-amber-700">{d.avgTransformations}</div>
+                <div className="text-sm font-medium text-gray-700 mt-0.5">Avg Transformations / EVE User</div>
+                <div className="text-xs text-gray-400 mt-1">Mean EVE chat transformations per EVE user</div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* 10-month EVE trend */}
         <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-gray-100">

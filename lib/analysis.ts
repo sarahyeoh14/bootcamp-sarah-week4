@@ -25,7 +25,7 @@ function pct(n: number, total: number) {
  * Single-snapshot dataset — every user has exactly one row (month = '2026-05').
  * No self-join needed; just filter by month directly for index efficiency.
  */
-const LATEST_SNAPSHOT = `(SELECT * FROM product_data WHERE month = '2026-05')`;
+const LATEST_SNAPSHOT = `(SELECT * FROM product_data WHERE month = (SELECT MAX(month) FROM product_data))`;
 
 // ---------------------------------------------------------------------------
 // 1. Cancellation — why people cancelled

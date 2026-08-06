@@ -517,175 +517,36 @@ export function computeForecasts(
 // ---------------------------------------------------------------------------
 
 /**
- * Re-runs the clustering step to retrieve the actual customer IDs in each
- * cluster. Because the clustering is deterministic (fixed seed), this produces
- * the same assignment as the cohort list page.
+ * Returns auth0_user_ids for a named ML cohort using SQL rules on product_data.
+ * Each cohort maps to a set of engagement/behaviour conditions derivable from the snapshot.
  */
 export function getCustomerIdsForMlCohort(cohortId: string): string[] {
   const db = getDb();
 
-  // Get all customers and their features for clustering
-  const customers = db.prepare(`
-    SELECT DISTINCT customer_id FROM subscription_tiers
-    UNION
-    SELECT DISTINCT customer_id FROM quest_progress
-    UNION
-    SELECT DISTINCT customer_id FROM purchase_history
-    UNION
-    SELECT DISTINCT customer_id FROM engagement_signals
-  `).all() as { customer_id: string }[];
+  const month = (db.prepare(
+    "SELECT MAX(month) as m FROM product_data WHERE subscription_status = 'active'"
+  ).get() as { m: string | null }).m ?? '2026-07';
 
-  if (customers.length === 0) return [];
+  // SQL rules matching the ML cohort definitions used in clustering.ts
+  const ruleMap: Record<string, string> = {
+    'high-value-engaged': "has_login_in_month = 1 AND has_progress_in_month = 1 AND has_used_eve_in_month = 1",
+    'quest-graduates':    "has_login_in_month = 1 AND has_progress_in_month = 1 AND has_used_eve_in_month = 0",
+    'at-risk-disengaged': "has_login_in_month = 0 AND COALESCE(total_tenure_days, 0) > 180",
+    'new-joiners':        "is_new_subscriber = 1",
+    'passive-subscribers':"has_login_in_month = 0 AND COALESCE(total_tenure_days, 0) <= 180 AND is_new_subscriber = 0",
+  };
 
-  // Engagement events per customer in last 7 days
-  const engMap = new Map<string, number>();
-  (db.prepare(`
-    SELECT customer_id, SUM(event_count) AS total_events
-    FROM engagement_signals
-    WHERE recorded_date >= datetime('now', '-7 days')
-    GROUP BY customer_id
-  `).all() as { customer_id: string; total_events: number }[]).forEach(r => {
-    engMap.set(r.customer_id, r.total_events);
-  });
+  const rule = ruleMap[cohortId];
+  if (!rule) return [];
 
-  // Avg quest completion
-  const questMap = new Map<string, number>();
-  (db.prepare(`
-    SELECT customer_id, AVG(completion_percentage) AS avg_completion
-    FROM quest_progress
-    GROUP BY customer_id
-  `).all() as { customer_id: string; avg_completion: number }[]).forEach(r => {
-    questMap.set(r.customer_id, r.avg_completion);
-  });
+  const rows = db.prepare(`
+    SELECT auth0_user_id AS customer_id
+    FROM product_data
+    WHERE month = ? AND subscription_status = 'active' AND (${rule})
+    LIMIT 5000
+  `).all(month) as { customer_id: string }[];
 
-  // Tier
-  const tierMap = new Map<string, number>();
-  (db.prepare(`
-    SELECT customer_id, MAX(tier_level) AS tier_level
-    FROM subscription_tiers
-    WHERE is_active = 1
-    GROUP BY customer_id
-  `).all() as { customer_id: string; tier_level: number }[]).forEach(r => {
-    tierMap.set(r.customer_id, r.tier_level);
-  });
-
-  // Total purchases
-  const purchaseMap = new Map<string, number>();
-  (db.prepare(`
-    SELECT customer_id, SUM(amount) AS total_amount
-    FROM purchase_history
-    GROUP BY customer_id
-  `).all() as { customer_id: string; total_amount: number }[]).forEach(r => {
-    purchaseMap.set(r.customer_id, r.total_amount);
-  });
-
-  // Days since last activity
-  const lastActivityMap = new Map<string, number>();
-  (db.prepare(`
-    SELECT customer_id, MAX(last_activity_at) AS last_at
-    FROM quest_progress
-    GROUP BY customer_id
-  `).all() as { customer_id: string; last_at: string }[]).forEach(r => {
-    const days = daysDiff(r.last_at);
-    lastActivityMap.set(r.customer_id, days);
-  });
-  (db.prepare(`
-    SELECT customer_id, MAX(recorded_date) AS last_at
-    FROM engagement_signals
-    GROUP BY customer_id
-  `).all() as { customer_id: string; last_at: string }[]).forEach(r => {
-    const days = daysDiff(r.last_at);
-    const existing = lastActivityMap.get(r.customer_id);
-    if (existing === undefined || days < existing) lastActivityMap.set(r.customer_id, days);
-  });
-
-  const features = customers.map(({ customer_id }) => ({
-    customerId: customer_id,
-    values: [
-      engMap.get(customer_id) ?? 0,
-      questMap.get(customer_id) ?? 0,
-      tierMap.get(customer_id) ?? 0,
-      purchaseMap.get(customer_id) ?? 0,
-      lastActivityMap.get(customer_id) ?? 60,
-    ],
-  }));
-
-  // Normalise
-  const dim = 5;
-  const mins = Array.from({ length: dim }, (_, i) => Math.min(...features.map(f => f.values[i])));
-  const maxs = Array.from({ length: dim }, (_, i) => Math.max(...features.map(f => f.values[i])));
-  const normalised = features.map(f => ({
-    customerId: f.customerId,
-    norm: f.values.map((v, i) => {
-      const range = maxs[i] - mins[i];
-      return range === 0 ? 0 : (v - mins[i]) / range;
-    }),
-  }));
-
-  // K-means (same algorithm as clustering.ts to produce same assignments)
-  const K = 5;
-  const points = normalised.map(n => n.norm);
-
-  // Deterministic init (same as clustering.ts)
-  const centroids: number[][] = [];
-  centroids.push([...points[Math.floor(points.length * 0.17)]]);
-  for (let c = 1; c < K; c++) {
-    const distances = points.map(p => Math.min(...centroids.map(cent => euclidean(p, cent))));
-    let maxDist = -1, maxIdx = 0;
-    for (let i = 0; i < distances.length; i++) {
-      if (distances[i] > maxDist) { maxDist = distances[i]; maxIdx = i; }
-    }
-    centroids.push([...points[maxIdx]]);
-  }
-
-  let assignments = new Array(points.length).fill(0);
-  for (let iter = 0; iter < 50; iter++) {
-    const newAssignments = points.map(p => {
-      let minDist = Infinity, best = 0;
-      for (let c = 0; c < K; c++) {
-        const d = euclidean(p, centroids[c]);
-        if (d < minDist) { minDist = d; best = c; }
-      }
-      return best;
-    });
-    const changed = newAssignments.some((a, i) => a !== assignments[i]);
-    assignments = newAssignments;
-    for (let c = 0; c < K; c++) {
-      const clusterPoints = points.filter((_, i) => assignments[i] === c);
-      if (clusterPoints.length > 0) {
-        centroids[c] = meanVector(clusterPoints);
-      }
-    }
-    if (!changed) break;
-  }
-
-  // Map centroid index to named cohort
-  const centroidToMeta = assignCohortNames(centroids);
-
-  // CLUSTER_META IDs in order
-  const CLUSTER_IDS = [
-    'high-value-engaged',
-    'quest-graduates',
-    'at-risk-disengaged',
-    'new-joiners',
-    'passive-subscribers',
-  ];
-
-  // Find which cluster index corresponds to our cohort ID
-  let targetClusterIdx = -1;
-  for (let c = 0; c < K; c++) {
-    const metaIdx = centroidToMeta[c];
-    if (CLUSTER_IDS[metaIdx] === cohortId) {
-      targetClusterIdx = c;
-      break;
-    }
-  }
-
-  if (targetClusterIdx === -1) return [];
-
-  return normalised
-    .filter((_, i) => assignments[i] === targetClusterIdx)
-    .map(n => n.customerId);
+  return rows.map(r => r.customer_id);
 }
 
 // ---------------------------------------------------------------------------

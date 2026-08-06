@@ -267,6 +267,55 @@ function CohortFormModal({
 // Main component
 // -----------------------------------------------------------------------
 
+// ─── Engagement depth model — July 2026 (product_data SQLite) ────────────────
+const DEPTH_LADDER = [
+  {
+    level: 'L4', emoji: '🧬', name: 'Transformer', color: '#7B2FBE', bg: 'bg-violet-50', border: 'border-violet-200', text: 'text-violet-700',
+    def: 'Login + Content Progress + Eve AI',
+    count: 6124, pct: '3.5', avgQuests: 15.6, avgHrs: 63.6, avgLtv: 1652,
+    action: 'PROTECT', actionBg: 'bg-violet-600',
+    strategy: 'White-glove treatment. Early quest access, personal milestones, zero mass-email.',
+  },
+  {
+    level: 'L3', emoji: '📚', name: 'Practitioner', color: '#1A73E8', bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700',
+    def: 'Login + Content Progress',
+    count: 21738, pct: '12.4', avgQuests: 12.6, avgHrs: 53.2, avgLtv: 1487,
+    action: 'NURTURE', actionBg: 'bg-blue-600',
+    strategy: 'Quest completion nudges. Introduce Eve AI as depth multiplier. Protect at renewal window.',
+  },
+  {
+    level: 'L2', emoji: '🌱', name: 'Student', color: '#00897B', bg: 'bg-teal-50', border: 'border-teal-200', text: 'text-teal-700',
+    def: 'Login only — no quest progress',
+    count: 36825, pct: '20.9', avgQuests: 8.3, avgHrs: 36.6, avgLtv: 1381,
+    action: 'ACTIVATE', actionBg: 'bg-teal-600',
+    strategy: '"Continue where you left off" prompts. 10-min micro-lesson entry point. Monthly 1 quest challenge.',
+  },
+  {
+    level: 'L1', emoji: '🌙', name: 'Resting Member', color: '#8D6E63', bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-800',
+    def: 'Active subscription · No login · Integration phase',
+    count: 111140, pct: '63.2', avgQuests: 3.6, avgHrs: 17.3, avgLtv: 977,
+    action: 'RESPECT', actionBg: 'bg-amber-700',
+    strategy: 'Quiet monthly digest. Zero push notifications. Escalate ONLY within 90 days of annual renewal.',
+  },
+];
+
+const SPECIAL_SEGMENTS = [
+  {
+    emoji: '⏰', name: 'Renewal-Risk', color: '#F57C00', bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700',
+    def: 'Resting + within 90 days of annual expiry',
+    count: 17934, pct: null, note: '$3.6M ARR renewal pool',
+    action: 'URGENT', actionBg: 'bg-orange-500',
+    strategy: 'Personalised "Year in Review" at 90/60/30 days before renewal. Show ROI before the charge.',
+  },
+  {
+    emoji: '🔮', name: 'Active Alumni', color: '#E91E63', bg: 'bg-rose-50', border: 'border-rose-200', text: 'text-rose-700',
+    def: 'Cancelled · But still logging in',
+    count: 3971, pct: null, note: '49.1% of cancelled base',
+    action: 'WIN-BACK', actionBg: 'bg-rose-600',
+    strategy: 'Personalised homecoming. Show new quests from their favourite teacher. Returning member rate.',
+  },
+];
+
 export default function CohortsClient({ initialMlCohorts, initialRuleCohorts, hasData }: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -328,6 +377,60 @@ export default function CohortsClient({ initialMlCohorts, initialRuleCohorts, ha
 
   return (
     <div className="p-6 space-y-8">
+
+      {/* ── Engagement Depth Ladder ── */}
+      <section>
+        <div className="flex items-center gap-2 mb-1">
+          <h2 className="text-base font-semibold text-gray-900">Engagement Depth Ladder</h2>
+          <span className="text-xs bg-violet-100 text-violet-700 px-2 py-0.5 rounded-full font-medium">Duolingo-adapted for MV</span>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">175,827 active subscribers · July 2026 · depth predicts renewal, not daily login frequency</p>
+
+        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden divide-y divide-gray-50 mb-4">
+          {DEPTH_LADDER.map((row) => (
+            <div key={row.level} className="flex items-center gap-4 px-5 py-3.5" style={{ borderLeft: `5px solid ${row.color}` }}>
+              <div className="text-lg font-black w-8 flex-shrink-0" style={{ color: row.color }}>{row.level}</div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-bold text-gray-900 text-sm">{row.emoji} {row.name}</span>
+                  <span className="text-xs text-gray-400">{row.def}</span>
+                  <span className={`text-xs font-bold text-white px-2 py-0.5 rounded-full ${row.actionBg}`}>{row.action}</span>
+                </div>
+                <div className="flex flex-wrap gap-2 mt-1.5">
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${row.bg} ${row.text}`}>{row.avgQuests} quests avg</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${row.bg} ${row.text}`}>{row.avgHrs} hrs content</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${row.bg} ${row.text}`}>LTV ${row.avgLtv.toLocaleString()}</span>
+                  <span className="text-xs text-gray-400 italic">{row.strategy}</span>
+                </div>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <div className="text-xl font-black" style={{ color: row.color }}>{row.count.toLocaleString()}</div>
+                <div className="text-xs text-gray-400">{row.pct}% of active</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {SPECIAL_SEGMENTS.map((seg) => (
+            <div key={seg.name} className={`rounded-xl p-4 border ${seg.bg} ${seg.border}`} style={{ borderLeft: `5px solid ${seg.color}` }}>
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-gray-900 text-sm">{seg.emoji} {seg.name}</span>
+                  <span className={`text-xs font-bold text-white px-2 py-0.5 rounded-full ${seg.actionBg}`}>{seg.action}</span>
+                </div>
+                <div className="text-right">
+                  <div className="text-lg font-black" style={{ color: seg.color }}>{seg.count.toLocaleString()}</div>
+                  <div className="text-xs text-gray-500">{seg.note}</div>
+                </div>
+              </div>
+              <div className="text-xs text-gray-500 mb-1">{seg.def}</div>
+              <div className="text-xs text-gray-600 italic">{seg.strategy}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* Search + Create */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 min-w-48">

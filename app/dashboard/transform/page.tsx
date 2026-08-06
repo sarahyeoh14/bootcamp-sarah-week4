@@ -173,6 +173,42 @@ export default function TransformPage() {
           </div>
         )}
 
+        {/* Content Type Breakdown */}
+        {hasData && d.hasProgress > 0 && (() => {
+          const { quests, meditations, shorts, standalone } = d.contentTypes;
+          const typeTotal = quests + meditations + shorts + standalone;
+          const typePct = (n: number) => typeTotal > 0 ? Math.round((n / typeTotal) * 100) : 0;
+          return (
+            <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-gray-100">
+                <h2 className="font-semibold text-gray-900">Content Type Breakdown</h2>
+                <p className="text-xs text-gray-500 mt-0.5">Total plays among active subscribers with progress</p>
+              </div>
+              <div className="px-5 py-4 space-y-4">
+                {[
+                  { label: 'Quests', count: quests, pct: typePct(quests), bar: 'bg-emerald-500' },
+                  { label: 'Meditations', count: meditations, pct: typePct(meditations), bar: 'bg-violet-500' },
+                  { label: 'Shorts', count: shorts, pct: typePct(shorts), bar: 'bg-amber-400' },
+                  { label: 'Standalone Courses', count: standalone, pct: typePct(standalone), bar: 'bg-sky-400' },
+                ].map(row => (
+                  <div key={row.label}>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-sm font-medium text-gray-700">{row.label}</span>
+                      <div className="text-sm">
+                        <span className="font-bold text-gray-900">{row.count.toLocaleString()}</span>
+                        <span className="text-gray-400 ml-1.5">({row.pct}%)</span>
+                      </div>
+                    </div>
+                    <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                      <div className={`h-full ${row.bar} rounded-full`} style={{ width: `${Math.max(row.pct, row.count > 0 ? 1 : 0)}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
         {/* 6-month trend */}
         <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-gray-100">

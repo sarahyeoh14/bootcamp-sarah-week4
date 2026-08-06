@@ -84,99 +84,60 @@ const CLUSTER_META: Array<{ id: string; name: string; summaryTemplate: (c: MlCoh
 function extractCustomerFeatures(): CustomerFeatures[] {
   const db = getDb();
 
-  // Get all unique customer IDs that appear in any table
-  const customers = db.prepare(`
-    SELECT DISTINCT customer_id FROM subscription_tiers
-    UNION
-    SELECT DISTINCT customer_id FROM quest_progress
-    UNION
-    SELECT DISTINCT customer_id FROM purchase_history
-    UNION
-    SELECT DISTINCT customer_id FROM engagement_signals
-  `).all() as { customer_id: string }[];
+  // Discover the current snapshot month from product_data
+  const monthRow = db.prepare(
+    "SELECT MAX(month) as m FROM product_data WHERE subscription_status = 'active'"
+  ).get() as { m: string | null };
+  if (!monthRow?.m) return [];
+  const month = monthRow.m;
 
-  if (customers.length === 0) return [];
+  const tierToLevel: Record<string, number> = {
+    'free': 0, 'plus': 1, 'tribe': 2, 'all access': 3, 'all access + live': 4,
+  };
 
-  // Engagement events per customer in the last 7 days (weekly avg)
-  const engagementMap = new Map<string, number>();
-  const engRows = db.prepare(`
-    SELECT customer_id, SUM(event_count) as total_events
-    FROM engagement_signals
-    WHERE recorded_date >= datetime('now', '-7 days')
-    GROUP BY customer_id
-  `).all() as { customer_id: string; total_events: number }[];
-  for (const row of engRows) {
-    engagementMap.set(row.customer_id, row.total_events / 1); // 1 week window → per-week count
-  }
+  // Sample directly in SQL using rowid modulo to avoid loading 175K rows into JS memory
+  const totalRow = db.prepare(
+    "SELECT COUNT(*) as n FROM product_data WHERE month = ? AND subscription_status = 'active'"
+  ).get(month) as { n: number };
+  const total = totalRow.n;
+  if (total === 0) return [];
+  const step = Math.max(1, Math.floor(total / 10000));
 
-  // Avg quest completion
-  const questMap = new Map<string, number>();
-  const questRows = db.prepare(`
-    SELECT customer_id, AVG(completion_percentage) as avg_completion
-    FROM quest_progress
-    GROUP BY customer_id
-  `).all() as { customer_id: string; avg_completion: number }[];
-  for (const row of questRows) {
-    questMap.set(row.customer_id, row.avg_completion);
-  }
+  const sampled = db.prepare(`
+    SELECT
+      auth0_user_id                                       AS customer_id,
+      COALESCE(CAST(n_content_viewed AS REAL) / 4.0, 0) AS avg_engagement_per_week,
+      COALESCE(total_quest_played, 0)                     AS total_quest_played,
+      LOWER(COALESCE(tier, 'free'))                       AS tier_lower,
+      COALESCE(lifetime_value, 0)                         AS lifetime_value,
+      last_login_timestamp
+    FROM product_data
+    WHERE month = ? AND subscription_status = 'active'
+      AND (rowid % ${step}) = 0
+  `).all(month) as {
+    customer_id: string;
+    avg_engagement_per_week: number;
+    total_quest_played: number;
+    tier_lower: string;
+    lifetime_value: number;
+    last_login_timestamp: string | null;
+  }[];
 
-  // Latest subscription tier
-  const tierMap = new Map<string, number>();
-  const tierRows = db.prepare(`
-    SELECT customer_id, MAX(tier_level) as tier_level
-    FROM subscription_tiers
-    WHERE is_active = 1
-    GROUP BY customer_id
-  `).all() as { customer_id: string; tier_level: number }[];
-  for (const row of tierRows) {
-    tierMap.set(row.customer_id, row.tier_level);
-  }
+  // Scale factor projects sampled counts back to full population
+  _populationScaleFactor = sampled.length > 0 ? total / sampled.length : 1;
 
-  // Total purchase amount
-  const purchaseMap = new Map<string, number>();
-  const purchaseRows = db.prepare(`
-    SELECT customer_id, SUM(amount) as total_amount
-    FROM purchase_history
-    GROUP BY customer_id
-  `).all() as { customer_id: string; total_amount: number }[];
-  for (const row of purchaseRows) {
-    purchaseMap.set(row.customer_id, row.total_amount);
-  }
-
-  // Days since last activity (from quest and engagement)
-  const lastActivityMap = new Map<string, number>();
-  const lastQuestRows = db.prepare(`
-    SELECT customer_id, MAX(last_activity_at) as last_at
-    FROM quest_progress
-    GROUP BY customer_id
-  `).all() as { customer_id: string; last_at: string }[];
-  for (const row of lastQuestRows) {
-    const days = daysDiff(row.last_at);
-    lastActivityMap.set(row.customer_id, days);
-  }
-  const lastEngRows = db.prepare(`
-    SELECT customer_id, MAX(recorded_date) as last_at
-    FROM engagement_signals
-    GROUP BY customer_id
-  `).all() as { customer_id: string; last_at: string }[];
-  for (const row of lastEngRows) {
-    const days = daysDiff(row.last_at);
-    const existing = lastActivityMap.get(row.customer_id);
-    // Take the more recent (smaller days value)
-    if (existing === undefined || days < existing) {
-      lastActivityMap.set(row.customer_id, days);
-    }
-  }
-
-  return customers.map(({ customer_id }) => ({
-    customerId: customer_id,
-    avgEngagementPerWeek: engagementMap.get(customer_id) ?? 0,
-    avgQuestCompletion: questMap.get(customer_id) ?? 0,
-    tierLevel: tierMap.get(customer_id) ?? 0,
-    totalPurchaseAmount: purchaseMap.get(customer_id) ?? 0,
-    daysSinceLastActivity: lastActivityMap.get(customer_id) ?? 60,
+  return sampled.map(row => ({
+    customerId: row.customer_id,
+    avgEngagementPerWeek: row.avg_engagement_per_week,
+    avgQuestCompletion: Math.min(row.total_quest_played * 5, 100),
+    tierLevel: tierToLevel[row.tier_lower] ?? 0,
+    totalPurchaseAmount: row.lifetime_value,
+    daysSinceLastActivity: row.last_login_timestamp ? daysDiff(row.last_login_timestamp) : 60,
   }));
 }
+
+// Scale factor so member counts reflect the full population, not just the sample
+let _populationScaleFactor = 1;
 
 function daysDiff(isoDate: string): number {
   const d = new Date(isoDate);
@@ -197,8 +158,8 @@ function normalise(features: CustomerFeatures[]): { normalised: number[][]; min:
     'daysSinceLastActivity',
   ];
 
-  const min = keys.map(k => Math.min(...features.map(f => f[k] as number)));
-  const max = keys.map(k => Math.max(...features.map(f => f[k] as number)));
+  const min = keys.map(k => features.reduce((m, f) => Math.min(m, f[k] as number), Infinity));
+  const max = keys.map(k => features.reduce((m, f) => Math.max(m, f[k] as number), -Infinity));
 
   const normalised = features.map(f =>
     keys.map((k, i) => {
@@ -431,12 +392,14 @@ export function getMLCohorts(forceRefresh = false): MlCohort[] {
   }
 
   const K = Math.min(5, CLUSTER_META.length);
+  const scaleFactor = _populationScaleFactor;
   const { normalised, min, max } = normalise(features);
   const { assignments, centroids } = kmeans(normalised, K);
 
-  // Count members per cluster
-  const counts = new Array(K).fill(0);
-  for (const a of assignments) counts[a]++;
+  // Count members per cluster and scale back to full population size
+  const rawCounts = new Array(K).fill(0);
+  for (const a of assignments) rawCounts[a]++;
+  const counts = rawCounts.map(c => Math.round(c * scaleFactor));
 
   // Map cluster indices to named cohorts
   const centroidToMeta = assignCohortNames(centroids);

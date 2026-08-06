@@ -3,11 +3,9 @@ import {
   seedProductDataIfNeeded,
   getLatestMonth,
   getMonthlySnapshot,
-  getEVEData,
-  getTransformData,
-  getAcquisitionData,
   getActivationData,
   getSegmentBreakdown,
+  getRetentionFactorRates,
   fmtMonth,
 } from '@/lib/product-data';
 import { getPipelineStatus } from '@/lib/pipeline-status';
@@ -22,17 +20,9 @@ export default function ForecastPage() {
   const month = getLatestMonth();
 
   const snap = getMonthlySnapshot(month);
-  const eve = getEVEData(month);
-  const transform = getTransformData(month);
-  const acq = getAcquisitionData(month);
   const act = getActivationData(month);
   const segments = getSegmentBreakdown(month);
-
-  // Annual value per user: LTV / (avgTenure / 365)
-  const avgTenureDays = transform.avgTenureDays > 0 ? transform.avgTenureDays : 365;
-  const annualValuePerUser = acq.avgLTV > 0
-    ? Math.round(acq.avgLTV / (avgTenureDays / 365))
-    : 516; // fallback
+  const retention = getRetentionFactorRates(month);
 
   const base: ForecastBaseMetrics = {
     active: snap.active,
@@ -40,13 +30,11 @@ export default function ForecastPage() {
     loginRate: snap.loginRate,
     hasProgress: snap.hasProgress,
     progressRate: snap.progressRate,
-    eveUsers: snap.eveUsers,
-    eveRate: snap.eveRate,
-    repeatUsers: eve.repeatUsers,
-    repeatRate: eve.repeatRate,
     newSubs: act.newSubs,
     activation15dRate: act.activation15dRate,
-    annualValuePerUser,
+    eveRepeatRate: retention.eveRepeatRate,
+    habitRate: retention.habitRate,
+    deepWatchRate: retention.deepWatchRate,
     monthLabel: fmtMonth(month),
   };
 

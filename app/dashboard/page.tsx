@@ -2,12 +2,33 @@ import Link from 'next/link';
 import { getJourneyFunnel } from '@/lib/journey';
 import DataFreshnessBanner from '@/components/DataFreshnessBanner';
 import { getPipelineStatus } from '@/lib/pipeline-status';
+import {
+  seedProductDataIfNeeded,
+  getLatestMonth,
+  getMRRStats,
+  fmtMonth,
+} from '@/lib/product-data';
 
 export const dynamic = 'force-dynamic';
 
 function fmt(n: number) {
   return n.toLocaleString();
 }
+
+const MEMBER_GROWTH = [
+  { month: 'Dec 25', net: -4670 },
+  { month: 'Jan 26', net: -1890 },
+  { month: 'Feb 26', net: -4446 },
+  { month: 'Mar 26', net: -4008 },
+  { month: 'Apr 26', net: -5392 },
+  { month: 'May 26', net: -7546 },
+  { month: 'Jun 26', net: -11164 },
+  { month: 'Jul 26', net: -9432 },
+];
+const PEAK_MEMBERS = 272392; // Nov 2024 peak
+const CURRENT_MEMBERS = 203019; // Aug 2026
+
+const MAX_BAR = 12000;
 
 const STAGES = [
   {
@@ -48,7 +69,7 @@ const STAGES = [
     key: 'transform',
     label: 'Transform',
     path: '/dashboard/transform',
-    description: 'Made content progress',
+    description: 'Consumed 4+ content this month',
     bgCard: 'bg-emerald-50',
     border: 'border-emerald-200',
     numColor: 'text-emerald-700',
@@ -81,15 +102,17 @@ const STAGES = [
 ] as const;
 
 export default function DashboardPage() {
+  seedProductDataIfNeeded();
   const { status, lastRunDate } = getPipelineStatus();
   const f = getJourneyFunnel();
+  const month = getLatestMonth();
+  const mrr = getMRRStats(month);
 
   const stageCounts = [f.active, f.loggedIn, f.hasProgress, f.eveUsers];
   const stageRates = [null, f.loginRate, f.progressRate, f.eveRate];
 
-  // MoM change for active subscribers
-  const prev = f.trend.length >= 2 ? f.trend[f.trend.length - 2] : null;
-  const activeMoM = prev && prev.active > 0 ? Math.round(((f.active - prev.active) / prev.active) * 100) : null;
+  const membersLost = PEAK_MEMBERS - CURRENT_MEMBERS;
+  const inactiveArrM = (mrr.inactiveArr / 1_000_000).toFixed(1);
 
   return (
     <div className="min-h-full">
@@ -98,23 +121,75 @@ export default function DashboardPage() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h1 className="text-xl font-bold text-gray-900">Customer Journey</h1>
-            <div className="flex items-center gap-3 mt-1">
-              <p className="text-sm text-gray-500">
-                Snapshot: <span className="font-medium text-gray-700">{f.monthLabel}</span>
-              </p>
-              {activeMoM !== null && (
-                <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${activeMoM >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
-                  {activeMoM >= 0 ? '+' : ''}{activeMoM}% MoM
-                </span>
-              )}
-            </div>
+            <p className="text-sm text-gray-500 mt-1">
+              Snapshot: <span className="font-medium text-gray-700">{fmtMonth(month)}</span>
+            </p>
           </div>
           <DataFreshnessBanner lastRunDate={lastRunDate} status={status} />
         </div>
       </div>
 
       <div className="p-6 space-y-6">
-        {/* Funnel cards */}
+        {/* KPI row */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {/* ARR */}
+          <div className="bg-white border border-gray-200 rounded-xl p-5">
+            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Annual Run Rate</div>
+            <div className="text-2xl font-bold text-gray-900">${(mrr.arr / 1_000_000).toFixed(2)}M</div>
+            <div className="text-xs text-gray-400 mt-1">from active subscribers</div>
+          </div>
+
+          {/* MRR */}
+          <div className="bg-white border border-gray-200 rounded-xl p-5">
+            <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Monthly Run Rate</div>
+            <div className="text-2xl font-bold text-gray-900">${(mrr.mrr / 1_000).toFixed(0)}K</div>
+            <div className="text-xs text-gray-400 mt-1">avg ${mrr.avgMonthlySpend}/member/mo</div>
+          </div>
+
+          {/* Members lost from peak */}
+          <div className="bg-red-50 border border-red-200 rounded-xl p-5">
+            <div className="text-xs font-semibold text-red-600 uppercase tracking-wide mb-1">Lost Since Peak (Nov &apos;24)</div>
+            <div className="text-2xl font-bold text-red-700">{fmt(membersLost)}</div>
+            <div className="text-xs text-red-400 mt-1">down from 272K</div>
+          </div>
+
+          {/* ARR at risk */}
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-5">
+            <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-1">Inactive Member ARR at Risk</div>
+            <div className="text-2xl font-bold text-amber-700">${(mrr.inactiveArr / 1_000_000).toFixed(1)}M</div>
+            <div className="text-xs text-amber-500 mt-1">55% annual churn est.</div>
+          </div>
+        </div>
+
+        {/* Member Growth Waterfall */}
+        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+          <div className="px-5 py-4 border-b border-gray-100">
+            <h2 className="font-semibold text-gray-900">Member Growth Trend</h2>
+            <p className="text-xs text-gray-500 mt-0.5">Net member change per month — from BigQuery</p>
+          </div>
+          <div className="px-5 py-3 space-y-1.5">
+            {MEMBER_GROWTH.map((row) => {
+              const isNeg = row.net < 0;
+              const barW = Math.min(Math.round((Math.abs(row.net) / MAX_BAR) * 100), 100);
+              return (
+                <div key={row.month} className="flex items-center gap-3 text-sm">
+                  <span className="w-12 text-xs text-gray-500 font-medium flex-shrink-0">{row.month}</span>
+                  <span className={`w-20 text-right font-semibold text-xs flex-shrink-0 ${isNeg ? 'text-red-600' : 'text-emerald-600'}`}>
+                    {isNeg ? '' : '+'}{fmt(row.net)}
+                  </span>
+                  <div className="flex-1 flex items-center h-4">
+                    <div
+                      className={`h-3 rounded-sm ${isNeg ? 'bg-red-400' : 'bg-emerald-400'}`}
+                      style={{ width: `${barW}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Journey Funnel cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {STAGES.map((stage, i) => {
             const count = stageCounts[i];
@@ -146,6 +221,46 @@ export default function DashboardPage() {
               </Link>
             );
           })}
+        </div>
+
+        {/* Executive Summary / Decision Required */}
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <svg className="w-5 h-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+            </svg>
+            <h2 className="font-bold text-amber-900 text-base">3 Decisions for This Week</h2>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* Decision 1 */}
+            <div className="bg-white rounded-lg border border-amber-200 p-4">
+              <div className="text-xs font-bold text-amber-700 uppercase tracking-wide mb-2">Re-engagement Campaign</div>
+              <p className="text-sm text-gray-700">
+                97K inactive subscribers haven&apos;t logged in. At 55% annual churn, that&apos;s ~${inactiveArrM}M ARR at risk. Should we run a re-engagement email sequence?
+              </p>
+            </div>
+
+            {/* Decision 2 */}
+            <div className="bg-white rounded-lg border border-amber-200 p-4">
+              <div className="text-xs font-bold text-amber-700 uppercase tracking-wide mb-2">Annual Renewal Cliff</div>
+              <p className="text-sm text-gray-700">
+                63% of annual subscribers don&apos;t renew at Month 12 (36% retention vs 87% in-year). A 5pp improvement = ~$2M ARR recovered. Approve a renewal intervention program?
+              </p>
+            </div>
+
+            {/* Decision 3 */}
+            <div className="bg-white rounded-lg border border-amber-200 p-4">
+              <div className="text-xs font-bold text-amber-700 uppercase tracking-wide mb-2">Monthly &rarr; Annual Upgrade</div>
+              <p className="text-sm text-gray-700">
+                Monthly subscribers churn 10&times; faster than annual (9.3% vs 36% at Month 12). Converting 5% of monthly base to annual would materially improve LTV. Approve an upgrade campaign?
+              </p>
+            </div>
+          </div>
+          <div className="mt-4">
+            <Link href="/dashboard/retention" className="inline-flex items-center gap-1 text-sm font-semibold text-amber-700 hover:text-amber-900">
+              View Retention Curves &rarr;
+            </Link>
+          </div>
         </div>
 
         {/* 6-month trend */}
@@ -212,11 +327,11 @@ export default function DashboardPage() {
                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Activation Gap</span>
                 </div>
                 <p className="text-sm text-gray-700">
-                  <span className="font-bold text-gray-900">{fmt(f.active - f.loggedIn)}</span> active subscribers didn't log in this month
+                  <span className="font-bold text-gray-900">{fmt(f.active - f.loggedIn)}</span> active subscribers didn&apos;t log in this month
                 </p>
                 <p className="text-xs text-gray-400 mt-1.5">Login rate has been declining — was 44% in mid-2025</p>
                 <Link href="/dashboard/activation" className="inline-flex items-center gap-1 mt-3 text-xs text-violet-600 font-medium hover:text-violet-800">
-                  View activation →
+                  View activation &rarr;
                 </Link>
               </div>
 
@@ -227,11 +342,11 @@ export default function DashboardPage() {
                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Transform Gap</span>
                 </div>
                 <p className="text-sm text-gray-700">
-                  <span className="font-bold text-gray-900">{fmt(f.loggedIn - f.hasProgress)}</span> members logged in but didn't engage with content
+                  <span className="font-bold text-gray-900">{fmt(f.loggedIn - f.hasProgress)}</span> members logged in but didn&apos;t engage with content
                 </p>
                 <p className="text-xs text-gray-400 mt-1.5">Content progress rate dropped from 26% (mid-2025) to {f.progressRate}%</p>
                 <Link href="/dashboard/transform" className="inline-flex items-center gap-1 mt-3 text-xs text-emerald-600 font-medium hover:text-emerald-800">
-                  View transform →
+                  View transform &rarr;
                 </Link>
               </div>
 
@@ -246,7 +361,7 @@ export default function DashboardPage() {
                 </p>
                 <p className="text-xs text-gray-400 mt-1.5">EVE launched Aug 2025. April 2026 is the highest adoption yet at {f.eveRate}%</p>
                 <Link href="/dashboard/ai-adoption" className="inline-flex items-center gap-1 mt-3 text-xs text-amber-600 font-medium hover:text-amber-800">
-                  View EVE adoption →
+                  View EVE adoption &rarr;
                 </Link>
               </div>
             </div>

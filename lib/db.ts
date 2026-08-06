@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import zlib from 'zlib';
 
 const DB_DIR = process.env.VERCEL
   ? '/tmp/data'
@@ -15,6 +16,15 @@ export function getDb(): Database.Database {
   // Ensure data directory exists
   if (!fs.existsSync(DB_DIR)) {
     fs.mkdirSync(DB_DIR, { recursive: true });
+  }
+
+  // On Vercel cold start, seed from the bundled compressed database
+  if (process.env.VERCEL && !fs.existsSync(DB_PATH)) {
+    const seedPath = path.join(process.cwd(), 'seed', 'cohorts.db.gz');
+    if (fs.existsSync(seedPath)) {
+      const decompressed = zlib.gunzipSync(fs.readFileSync(seedPath));
+      fs.writeFileSync(DB_PATH, decompressed);
+    }
   }
 
   db = new Database(DB_PATH);

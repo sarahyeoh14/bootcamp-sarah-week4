@@ -8,23 +8,19 @@ export interface ForecastBaseMetrics {
   loginRate: number;
   hasProgress: number;
   progressRate: number;
-  eveUsers: number;
-  eveRate: number;
-  repeatUsers: number;
-  repeatRate: number;
   newSubs: number;
   activation15dRate: number;
-  annualValuePerUser: number; // LTV / (avgTenureDays / 365)
+  eveRepeatRate: number;
+  habitRate: number;
+  deepWatchRate: number;
   monthLabel: string;
 }
 
 export interface SegmentBreakdown {
-  eveRepeat: { users: number; avgLtv: number };
-  eveUser: { users: number; avgLtv: number };
-  withProgress: { users: number; avgLtv: number };
-  loggedIn: { users: number; avgLtv: number };
-  newNotActivated: { users: number; avgLtv: number };
-  inactive: { users: number; avgLtv: number };
+  withProgress: { users: number; avgAnnualSpend: number };
+  loggedIn: { users: number; avgAnnualSpend: number };
+  newNotActivated: { users: number; avgAnnualSpend: number };
+  inactive: { users: number; avgAnnualSpend: number };
 }
 
 // Churn rate assumptions by engagement stage (annual)
@@ -33,8 +29,9 @@ const CHURN = {
   inactive: 0.55,           // not logged in (established subscriber)
   loggedIn: 0.25,           // logged in but no progress
   withProgress: 0.08,       // made content progress
-  eveUser: 0.05,            // used EVE
-  eveRepeat: 0.03,          // repeat EVE user
+  deepEngaged: 0.06,        // 120+ min/month watch time — deep value realisation
+  habitFormed: 0.04,        // 3+ consecutive months of progress — formed learning habit
+  eveRepeat: 0.03,          // repeat EVE user — AI-assisted learning habit
 };
 
 function fmt(n: number) { return Math.round(n).toLocaleString(); }
@@ -68,29 +65,9 @@ interface LeverResult {
 
 const SEGMENT_DEFS = [
   {
-    key: 'eveRepeat' as const,
-    label: 'EVE Repeat',
-    description: 'Used EVE multiple times this month',
-    churn: 0.03,
-    color: 'text-emerald-700',
-    badgeBg: 'bg-emerald-50',
-    badgeText: 'text-emerald-700',
-    churnColor: 'text-emerald-600',
-  },
-  {
-    key: 'eveUser' as const,
-    label: 'EVE User',
-    description: 'Used EVE at least once this month',
-    churn: 0.05,
-    color: 'text-amber-700',
-    badgeBg: 'bg-amber-50',
-    badgeText: 'text-amber-700',
-    churnColor: 'text-amber-600',
-  },
-  {
     key: 'withProgress' as const,
-    label: 'With Progress',
-    description: 'Made content progress, no EVE',
+    label: 'Transform',
+    description: '4+ content views or used EVE this month',
     churn: 0.08,
     color: 'text-sky-700',
     badgeBg: 'bg-sky-50',
@@ -100,7 +77,7 @@ const SEGMENT_DEFS = [
   {
     key: 'loggedIn' as const,
     label: 'Logged In',
-    description: 'Logged in, no content progress',
+    description: 'Logged in, fewer than 4 content views',
     churn: 0.25,
     color: 'text-violet-700',
     badgeBg: 'bg-violet-50',
@@ -108,19 +85,9 @@ const SEGMENT_DEFS = [
     churnColor: 'text-orange-500',
   },
   {
-    key: 'newNotActivated' as const,
-    label: 'New, Not Activated',
-    description: 'Joined this month, no 15d progress',
-    churn: 0.70,
-    color: 'text-red-700',
-    badgeBg: 'bg-red-50',
-    badgeText: 'text-red-700',
-    churnColor: 'text-red-600',
-  },
-  {
     key: 'inactive' as const,
     label: 'Inactive',
-    description: 'Established subscriber, not logged in',
+    description: 'Active subscription, not logged in this month',
     churn: 0.55,
     color: 'text-gray-600',
     badgeBg: 'bg-gray-50',
@@ -129,13 +96,13 @@ const SEGMENT_DEFS = [
   },
 ];
 
-function SegmentRevenueTable({ segments, arpu }: { segments: SegmentBreakdown; arpu: number }) {
+function SegmentRevenueTable({ segments }: { segments: SegmentBreakdown }) {
   const rows = SEGMENT_DEFS.map(def => {
-    const { users } = segments[def.key];
-    const annualRevenue = users * arpu;
-    const retainedRevenue = users * (1 - def.churn) * arpu;
-    const atRiskRevenue = users * def.churn * arpu;
-    return { ...def, users, annualRevenue, retainedRevenue, atRiskRevenue };
+    const { users, avgAnnualSpend } = segments[def.key];
+    const annualRevenue = users * avgAnnualSpend;
+    const retainedRevenue = users * (1 - def.churn) * avgAnnualSpend;
+    const atRiskRevenue = users * def.churn * avgAnnualSpend;
+    return { ...def, users, avgAnnualSpend, annualRevenue, retainedRevenue, atRiskRevenue };
   });
 
   const totalRevenue = rows.reduce((s, r) => s + r.annualRevenue, 0);
@@ -147,7 +114,7 @@ function SegmentRevenueTable({ segments, arpu }: { segments: SegmentBreakdown; a
       <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
         <div>
           <h2 className="font-semibold text-gray-900">Current Revenue by Engagement Segment</h2>
-          <p className="text-xs text-gray-400 mt-0.5">Annual retention revenue across all active subscribers — based on churn rate per engagement stage</p>
+          <p className="text-xs text-gray-400 mt-0.5">Annual spend × retention rate — based on current subscription price per engagement stage</p>
         </div>
         <div className="text-right hidden sm:block">
           <div className="text-xs text-gray-400">Total at risk / year</div>
@@ -216,21 +183,9 @@ function SegmentRevenueTable({ segments, arpu }: { segments: SegmentBreakdown; a
 }
 
 export default function ForecastSimulator({ base, segments }: { base: ForecastBaseMetrics; segments: SegmentBreakdown }) {
-  const [deltas, setDeltas] = useState({ activation15d: 0, login: 0, progress: 0, eve: 0, eveRepeat: 0 });
+  const [deltas, setDeltas] = useState({ login: 0, progress: 0, deepWatch: 0, habit: 0, eveRepeat: 0 });
 
   const levers: Lever[] = [
-    {
-      id: 'activation15d',
-      label: 'New Sub Activation (15-Day)',
-      sublabel: `Currently ${base.activation15dRate}% of new subscribers make content progress within 15 days of joining`,
-      color: 'text-sky-700',
-      trackColor: 'accent-sky-500',
-      thumbColor: 'bg-sky-500',
-      current: base.activation15dRate,
-      unit: 'pp',
-      max: Math.min(40, 100 - base.activation15dRate),
-      step: 1,
-    },
     {
       id: 'login',
       label: 'Login Rate',
@@ -245,8 +200,8 @@ export default function ForecastSimulator({ base, segments }: { base: ForecastBa
     },
     {
       id: 'progress',
-      label: 'Content Progress Rate',
-      sublabel: `Currently ${base.progressRate}% — lift % of active subscribers making content progress`,
+      label: 'Transform Rate (4+ content views)',
+      sublabel: `Currently ${base.progressRate}% — lift % of active subscribers reaching 4+ content interactions`,
       color: 'text-emerald-700',
       trackColor: 'accent-emerald-500',
       thumbColor: 'bg-emerald-500',
@@ -256,57 +211,74 @@ export default function ForecastSimulator({ base, segments }: { base: ForecastBa
       step: 1,
     },
     {
-      id: 'eve',
-      label: 'EVE Adoption',
-      sublabel: `Currently ${base.eveRate}% — lift % of active subscribers who use EVE monthly`,
-      color: 'text-amber-700',
-      trackColor: 'accent-amber-500',
-      thumbColor: 'bg-amber-500',
-      current: base.eveRate,
+      id: 'deepWatch',
+      label: 'Deep Watch Sessions (≥120 min/mo)',
+      sublabel: `Currently ${base.deepWatchRate}% watch 120+ min/month — deep content consumption signals high value realisation`,
+      color: 'text-teal-700',
+      trackColor: 'accent-teal-500',
+      thumbColor: 'bg-teal-500',
+      current: base.deepWatchRate,
       unit: 'pp',
-      max: Math.min(20, 100 - base.eveRate),
+      max: Math.min(20, 100 - base.deepWatchRate),
+      step: 1,
+    },
+    {
+      id: 'habit',
+      label: 'Learning Habit Formation (3+ months)',
+      sublabel: `Currently ${base.habitRate}% have made progress for 3+ consecutive months — habit-formed learners rarely churn`,
+      color: 'text-indigo-700',
+      trackColor: 'accent-indigo-500',
+      thumbColor: 'bg-indigo-500',
+      current: base.habitRate,
+      unit: 'pp',
+      max: Math.min(25, 100 - base.habitRate),
       step: 1,
     },
     {
       id: 'eveRepeat',
       label: 'EVE Repeat Usage',
-      sublabel: `Currently ${base.repeatRate}% of EVE users — lift % who use EVE multiple times/month`,
-      color: 'text-orange-700',
-      trackColor: 'accent-orange-500',
-      thumbColor: 'bg-orange-500',
-      current: base.repeatRate,
+      sublabel: `Currently ${base.eveRepeatRate}% use EVE multiple times/month — AI-assisted learning habit is the strongest retention signal`,
+      color: 'text-amber-700',
+      trackColor: 'accent-amber-500',
+      thumbColor: 'bg-amber-500',
+      current: base.eveRepeatRate,
       unit: 'pp',
-      max: Math.min(40, 100 - base.repeatRate),
+      max: Math.min(30, 100 - base.eveRepeatRate),
       step: 1,
     },
   ];
 
   const results = useMemo<LeverResult[]>(() => {
-    const v = base.annualValuePerUser;
-
-    const activationAdditional = (deltas.activation15d / 100) * base.newSubs;
-    const activationRetained = activationAdditional * (CHURN.newSubNotActivated - CHURN.loggedIn);
-
+    // Revenue uses each segment's avg annual spend
     const loginAdditional = (deltas.login / 100) * base.active;
     const loginRetained = loginAdditional * (CHURN.inactive - CHURN.loggedIn);
+    const loginRevenue = loginRetained * segments.loggedIn.avgAnnualSpend;
 
     const progressAdditional = (deltas.progress / 100) * base.active;
     const progressRetained = progressAdditional * (CHURN.loggedIn - CHURN.withProgress);
+    const progressRevenue = progressRetained * segments.withProgress.avgAnnualSpend;
 
-    const eveAdditional = (deltas.eve / 100) * base.active;
-    const eveRetained = eveAdditional * (CHURN.withProgress - CHURN.eveUser);
+    // Levers 4–6 upgrade users within "with progress" to deeper engagement states
+    const deepWatchAdditional = (deltas.deepWatch / 100) * base.active;
+    const deepWatchRetained = deepWatchAdditional * (CHURN.withProgress - CHURN.deepEngaged);
+    const deepWatchRevenue = deepWatchRetained * segments.withProgress.avgAnnualSpend;
 
-    const repeatAdditional = (deltas.eveRepeat / 100) * base.eveUsers;
-    const repeatRetained = repeatAdditional * (CHURN.eveUser - CHURN.eveRepeat);
+    const habitAdditional = (deltas.habit / 100) * base.active;
+    const habitRetained = habitAdditional * (CHURN.withProgress - CHURN.habitFormed);
+    const habitRevenue = habitRetained * segments.withProgress.avgAnnualSpend;
+
+    const eveRepeatAdditional = (deltas.eveRepeat / 100) * base.active;
+    const eveRepeatRetained = eveRepeatAdditional * (CHURN.withProgress - CHURN.eveRepeat);
+    const eveRepeatRevenue = eveRepeatRetained * segments.withProgress.avgAnnualSpend;
 
     return [
-      { id: 'activation15d', label: 'New Sub Activation', color: 'text-sky-700', additionalUsers: activationAdditional, usersRetained: activationRetained, annualRevenue: activationRetained * v },
-      { id: 'login', label: 'Login Rate', color: 'text-violet-700', additionalUsers: loginAdditional, usersRetained: loginRetained, annualRevenue: loginRetained * v },
-      { id: 'progress', label: 'Content Progress', color: 'text-emerald-700', additionalUsers: progressAdditional, usersRetained: progressRetained, annualRevenue: progressRetained * v },
-      { id: 'eve', label: 'EVE Adoption', color: 'text-amber-700', additionalUsers: eveAdditional, usersRetained: eveRetained, annualRevenue: eveRetained * v },
-      { id: 'eveRepeat', label: 'EVE Repeat', color: 'text-orange-700', additionalUsers: repeatAdditional, usersRetained: repeatRetained, annualRevenue: repeatRetained * v },
+      { id: 'login', label: 'Login Rate', color: 'text-violet-700', additionalUsers: loginAdditional, usersRetained: loginRetained, annualRevenue: loginRevenue },
+      { id: 'progress', label: 'Content Progress', color: 'text-emerald-700', additionalUsers: progressAdditional, usersRetained: progressRetained, annualRevenue: progressRevenue },
+      { id: 'deepWatch', label: 'Deep Watch Sessions', color: 'text-teal-700', additionalUsers: deepWatchAdditional, usersRetained: deepWatchRetained, annualRevenue: deepWatchRevenue },
+      { id: 'habit', label: 'Learning Habit', color: 'text-indigo-700', additionalUsers: habitAdditional, usersRetained: habitRetained, annualRevenue: habitRevenue },
+      { id: 'eveRepeat', label: 'EVE Repeat Usage', color: 'text-amber-700', additionalUsers: eveRepeatAdditional, usersRetained: eveRepeatRetained, annualRevenue: eveRepeatRevenue },
     ];
-  }, [deltas, base]);
+  }, [deltas, base, segments]);
 
   const totalRetained = results.reduce((s, r) => s + r.usersRetained, 0);
   const totalRevenue = results.reduce((s, r) => s + r.annualRevenue, 0);
@@ -317,10 +289,10 @@ export default function ForecastSimulator({ base, segments }: { base: ForecastBa
   }
 
   const leverDelta: Record<string, number> = {
-    activation15d: deltas.activation15d,
     login: deltas.login,
     progress: deltas.progress,
-    eve: deltas.eve,
+    deepWatch: deltas.deepWatch,
+    habit: deltas.habit,
     eveRepeat: deltas.eveRepeat,
   };
 
@@ -350,7 +322,7 @@ export default function ForecastSimulator({ base, segments }: { base: ForecastBa
           )}
         </div>
         {anyActive && (
-          <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             {results.map(r => (
               <div key={r.id} className="bg-white rounded-lg p-3 border border-gray-100">
                 <div className={`text-xs font-semibold uppercase tracking-wide ${r.color} mb-1`}>{r.label}</div>
@@ -367,7 +339,7 @@ export default function ForecastSimulator({ base, segments }: { base: ForecastBa
       </div>
 
       {/* Current revenue by engagement segment */}
-      <SegmentRevenueTable segments={segments} arpu={base.annualValuePerUser} />
+      <SegmentRevenueTable segments={segments} />
 
       {/* Levers */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -448,20 +420,20 @@ export default function ForecastSimulator({ base, segments }: { base: ForecastBa
           <div>
             <div className="font-medium text-gray-600 mb-1.5">Annual churn rate by engagement stage</div>
             <ul className="space-y-1">
-              <li className="flex justify-between"><span>New sub, not activated (15d)</span><span className="font-mono text-red-600">70%</span></li>
               <li className="flex justify-between"><span>Not logged in</span><span className="font-mono text-red-500">55%</span></li>
               <li className="flex justify-between"><span>Logged in, no progress</span><span className="font-mono text-orange-500">25%</span></li>
               <li className="flex justify-between"><span>With content progress</span><span className="font-mono text-emerald-600">8%</span></li>
-              <li className="flex justify-between"><span>EVE user</span><span className="font-mono text-amber-600">5%</span></li>
-              <li className="flex justify-between"><span>EVE repeat user</span><span className="font-mono text-emerald-600">3%</span></li>
+              <li className="flex justify-between"><span>Deep watch (120+ min/mo)</span><span className="font-mono text-teal-600">6%</span></li>
+              <li className="flex justify-between"><span>Learning habit (3+ months)</span><span className="font-mono text-indigo-600">4%</span></li>
+              <li className="flex justify-between"><span>EVE repeat user</span><span className="font-mono text-amber-600">3%</span></li>
             </ul>
           </div>
           <div>
             <div className="font-medium text-gray-600 mb-1.5">Revenue model</div>
             <ul className="space-y-1">
-              <li className="flex justify-between"><span>Annual value / user</span><span className="font-mono">{fmtDollar(base.annualValuePerUser)}</span></li>
               <li className="flex justify-between"><span>Base: active subscribers</span><span className="font-mono">{fmt(base.active)}</span></li>
               <li className="flex justify-between"><span>Base month</span><span className="font-mono">{base.monthLabel}</span></li>
+              <li className="flex justify-between"><span>Revenue basis</span><span className="font-mono text-xs">Avg annual spend per segment</span></li>
               <li className="flex justify-between mt-2 pt-2 border-t border-gray-200"><span className="text-gray-400 italic" style={{fontSize: '0.68rem'}}>Churn rates are model estimates based on SaaS subscription research. Validate against actual cohort churn data.</span></li>
             </ul>
           </div>

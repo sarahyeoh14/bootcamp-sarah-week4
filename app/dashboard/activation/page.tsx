@@ -38,12 +38,11 @@ export default function ActivationPage() {
 
       <div className="p-6 space-y-6">
         {/* Stats */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
           {[
             { label: 'Logged In', value: hasData ? fmt(d.loggedIn) : '—', detail: `${d.loginRate}% login rate`, accent: 'text-violet-700' },
             { label: 'Not Logged In', value: hasData ? fmt(d.notLoggedIn) : '—', detail: 'Inactive this month', accent: 'text-gray-500' },
             { label: 'New Sub Activation', value: hasData && d.newSubs > 0 ? `${d.activation15dRate}%` : '—', detail: 'Content progress within 15d of join', accent: 'text-violet-700' },
-            { label: 'Web vs App', value: hasData ? `${d.platforms.find(p => p.platform === 'web')?.pct ?? 0}%` : '—', detail: 'Using web platform', accent: 'text-violet-700' },
           ].map(s => (
             <div key={s.label} className="bg-white border border-gray-200 rounded-xl p-5">
               <div className={`text-2xl font-bold ${s.accent} mb-0.5`}>{s.value}</div>
@@ -110,31 +109,6 @@ export default function ActivationPage() {
             </div>
           )}
 
-          {/* Platform split */}
-          {hasData && (
-            <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-gray-100">
-                <h2 className="font-semibold text-gray-900">Platform Breakdown</h2>
-                <p className="text-xs text-gray-500 mt-0.5">Of {fmt(d.loggedIn)} logins this month</p>
-              </div>
-              <div className="px-5 py-4 space-y-3">
-                {d.platforms.map(p => (
-                  <div key={p.platform}>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm font-medium text-gray-700 capitalize">{p.platform}</span>
-                      <span className="text-sm">
-                        <span className="font-bold text-violet-700">{p.pct}%</span>
-                        <span className="text-gray-400 ml-1">({fmt(p.count)})</span>
-                      </span>
-                    </div>
-                    <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-violet-500 rounded-full" style={{ width: `${p.pct}%` }} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
 
         {/* 6-month login trend */}

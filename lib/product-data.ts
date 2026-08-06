@@ -391,7 +391,7 @@ export function getMonthlySnapshot(month: string): MonthlySnapshot {
     db.prepare(`SELECT COUNT(*) as n ${base} AND has_login_in_month = 1`).get(month) as { n: number }
   ).n;
   const hasProgress = (
-    db.prepare(`SELECT COUNT(*) as n ${base} AND has_progress_in_month = 1`).get(month) as { n: number }
+    db.prepare(`SELECT COUNT(*) as n ${base} AND n_content_viewed >= 4`).get(month) as { n: number }
   ).n;
   const eveUsers = (
     db.prepare(`SELECT COUNT(*) as n ${base} AND has_used_eve_in_month = 1`).get(month) as { n: number }
@@ -658,8 +658,9 @@ export function getTransformData(month: string) {
 
   const base = "FROM product_data WHERE month = ? AND subscription_status = 'active'";
   const total = (db.prepare(`SELECT COUNT(*) as n ${base}`).get(month) as { n: number }).n;
+  // Transform = 4+ content views (meaningful engagement threshold)
   const hasProgress = (
-    db.prepare(`SELECT COUNT(*) as n ${base} AND has_progress_in_month = 1`).get(month) as { n: number }
+    db.prepare(`SELECT COUNT(*) as n ${base} AND n_content_viewed >= 4`).get(month) as { n: number }
   ).n;
 
   const contentRow = db
@@ -669,7 +670,7 @@ export function getTransformData(month: string) {
         AVG(content_watched_min) as avg_watch,
         MAX(n_content_viewed) as max_content,
         AVG(total_tenure_days) as avg_tenure
-       ${base} AND has_progress_in_month = 1`
+       ${base} AND n_content_viewed >= 4`
     )
     .get(month) as {
     avg_content: number | null;
@@ -892,16 +893,15 @@ export function getPremiumData(month: string) {
 // ---------------------------------------------------------------------------
 // Segment revenue breakdown (for Forecast page)
 // ---------------------------------------------------------------------------
-// Mutually exclusive priority: with progress (incl. EVE users) > logged in > new not activated > inactive
+// Mutually exclusive priority: transform (4+ content views or EVE) > logged in > inactive
 
 export function getSegmentBreakdown(month: string) {
   const db = getDb();
   const rows = db.prepare(`
     SELECT
       CASE
-        WHEN has_progress_in_month = 1 OR has_used_eve_in_month = 1 THEN 'with_progress'
+        WHEN n_content_viewed >= 4 OR has_used_eve_in_month = 1 THEN 'with_progress'
         WHEN has_login_in_month = 1 THEN 'logged_in'
-        WHEN is_new_subscriber = 1 AND has_content_progress_within_15d = 0 THEN 'new_not_activated'
         ELSE 'inactive'
       END as segment,
       COUNT(*) as users,
@@ -925,7 +925,7 @@ export function getSegmentBreakdown(month: string) {
   return {
     withProgress: seg('with_progress'),
     loggedIn: seg('logged_in'),
-    newNotActivated: seg('new_not_activated'),
+    newNotActivated: { users: 0, avgAnnualSpend: 0 }, // removed — folded into inactive
     inactive: seg('inactive'),
   };
 }

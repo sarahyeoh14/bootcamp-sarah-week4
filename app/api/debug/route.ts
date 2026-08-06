@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { getDb } from '@/lib/db';
+import { getMLCohorts } from '@/lib/clustering';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,8 +39,22 @@ export async function GET() {
       "SELECT ROUND(SUM(CASE WHEN purchase_price>0 THEN CASE WHEN LOWER(payment_frequency)='monthly' THEN purchase_price*12 ELSE purchase_price END ELSE 0 END)/1e6,2) as arr FROM product_data WHERE subscription_status='active' AND month='2026-07'"
     ).get();
     info.arrMillions = arr;
+
+    // Test rowid sampling
+    const step = 17;
+    const sampleCount = db.prepare(
+      `SELECT COUNT(*) as n FROM product_data WHERE month='2026-07' AND subscription_status='active' AND (rowid % ${step}) = 0`
+    ).get();
+    info.rowidSampleCount = sampleCount;
   } catch (e) {
     info.dbError = String(e);
+  }
+
+  try {
+    const mlCohorts = getMLCohorts(true);
+    info.mlCohorts = mlCohorts.map(c => ({ id: c.id, memberCount: c.memberCount }));
+  } catch (e) {
+    info.mlCohortError = String(e);
   }
 
   return NextResponse.json(info, { status: 200 });
