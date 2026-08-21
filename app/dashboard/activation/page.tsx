@@ -158,6 +158,22 @@ export default function ActivationPage() {
           </div>
         </div>
 
+        {/* Purchase cohort deep-dive */}
+        <div className="bg-white border border-gray-200 rounded-xl p-5 flex items-center justify-between">
+          <div>
+            <h3 className="font-semibold text-gray-900">Purchase Cohort Metrics</h3>
+            <p className="text-sm text-gray-500 mt-0.5">
+              Day 0/7 login & Day 15/30 activation rates — weekly view with filters for price, discount, traffic source &amp; more
+            </p>
+          </div>
+          <Link
+            href="/dashboard/activation/purchase-cohorts"
+            className="flex-shrink-0 flex items-center gap-2 px-4 py-2 bg-violet-600 text-white text-sm font-medium rounded-lg hover:bg-violet-700 transition-colors"
+          >
+            View cohorts →
+          </Link>
+        </div>
+
         {/* Insight */}
         <div className="bg-violet-50 border border-violet-200 rounded-xl p-5">
           <h3 className="font-semibold text-violet-900 mb-2">Product Insight</h3>

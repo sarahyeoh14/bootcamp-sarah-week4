@@ -5,7 +5,7 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ['better-sqlite3'],
   // Ensure the seed database is included in the deployment bundle
   outputFileTracingIncludes: {
-    '/**': ['./seed/**'],
+    '/**': ['./seed/**', './data/l26weeks_product_metric_v3.json'],
   },
 };
 

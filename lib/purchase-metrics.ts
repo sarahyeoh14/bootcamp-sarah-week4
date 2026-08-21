@@ -1,0 +1,595 @@
+/**
+ * purchase-metrics.ts
+ *
+ * Loads l26weeks_product_metric_v2.json — one row per purchase event.
+ * Seeds one row per (user_id, purchase_week) so users with purchases in
+ * multiple weeks appear in each of those week's cohorts.
+ *
+ * Exposes:
+ *   seedPurchaseMetricsIfNeeded()
+ *   getWeeklyMetrics(filters?)
+ *   getFilterOptions()
+ */
+
+import path from 'path';
+import fs from 'fs';
+import { getDb } from './db';
+
+const DATA_PATH = path.join(process.cwd(), 'data', 'l26weeks_product_metric_v3.json');
+
+// Schema version — bump whenever the table structure changes so the DB is rebuilt.
+const SCHEMA_VERSION = 6;
+
+// ---------------------------------------------------------------------------
+// Schema
+// ---------------------------------------------------------------------------
+
+function ensureTable(): void {
+  const db = getDb();
+
+  // Create a metadata table to track schema version
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS purchase_cohorts_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+  `);
+
+  const versionRow = db.prepare('SELECT value FROM purchase_cohorts_meta WHERE key = ?').get('schema_version') as { value: string } | undefined;
+  const existingVersion = versionRow ? parseInt(versionRow.value, 10) : 0;
+
+  if (existingVersion !== SCHEMA_VERSION) {
+    // Drop and recreate with the new schema
+    db.exec(`
+      DROP TABLE IF EXISTS purchase_cohorts;
+      DROP INDEX IF EXISTS idx_pc_week;
+      DROP INDEX IF EXISTS idx_pc_traffic;
+      DROP INDEX IF EXISTS idx_pc_campaign;
+    `);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS purchase_cohorts (
+      user_id TEXT NOT NULL,
+      purchase_week TEXT NOT NULL,
+      purchase_date TEXT NOT NULL,
+      days_to_login INTEGER,
+      days_to_activation INTEGER,
+      traffic_source TEXT,
+      campaign_type TEXT,
+      payment_frequency TEXT,
+      device_category TEXT,
+      has_discount INTEGER DEFAULT 0,
+      order_amount REAL,
+      product_funnel TEXT,
+      is_mc_funnel INTEGER DEFAULT 0,
+      is_vsl_funnel INTEGER DEFAULT 0,
+      is_first_order INTEGER DEFAULT 0,
+      order_type TEXT,
+      place_in_funnel TEXT,
+      product_type TEXT,
+      has_funnel_quest INTEGER DEFAULT 0,
+      product_name TEXT,
+      PRIMARY KEY (user_id, purchase_week)
+    );
+    CREATE INDEX IF NOT EXISTS idx_pc_week ON purchase_cohorts(purchase_week);
+    CREATE INDEX IF NOT EXISTS idx_pc_traffic ON purchase_cohorts(traffic_source);
+    CREATE INDEX IF NOT EXISTS idx_pc_campaign ON purchase_cohorts(campaign_type);
+  `);
+
+  // Record current schema version
+  db.prepare('INSERT OR REPLACE INTO purchase_cohorts_meta (key, value) VALUES (?, ?)').run('schema_version', String(SCHEMA_VERSION));
+}
+
+// ---------------------------------------------------------------------------
+// Helper: Monday of the ISO week for a given YYYY-MM-DD
+// ---------------------------------------------------------------------------
+function mondayOfWeek(dateStr: string): string {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  const day = d.getUTCDay(); // 0 = Sun
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setUTCDate(d.getUTCDate() + diff);
+  return d.toISOString().substring(0, 10);
+}
+
+// ---------------------------------------------------------------------------
+// Seed
+// ---------------------------------------------------------------------------
+
+export function seedPurchaseMetricsIfNeeded(): void {
+  try {
+    ensureTable();
+    const db = getDb();
+    const count = (db.prepare('SELECT COUNT(*) as cnt FROM purchase_cohorts').get() as { cnt: number }).cnt;
+    if (count > 0) return;
+    if (!fs.existsSync(DATA_PATH)) return;
+
+    // Read file in chunks and parse NDJSON.
+    // Collect one entry per (user_id, purchase_week). For a given user+week pair,
+    // keep the row with the earliest purchase_date (to get stable filter dimensions).
+    const CHUNK = 65536;
+    const fd = fs.openSync(DATA_PATH, 'r');
+    const buf = Buffer.alloc(CHUNK);
+    // key: "userId|purchase_week"
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pairMap = new Map<string, any>();
+    let leftover = '';
+    let bytesRead = 0;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    function processRow(r: any) {
+      const userId = r.user_id as string;
+      if (!userId) return;
+      const pDate = typeof r.purchase_timestamp === 'string'
+        ? r.purchase_timestamp.substring(0, 10) : '';
+      if (!pDate) return;
+
+      const week = mondayOfWeek(pDate);
+      const key = `${userId}|${week}`;
+      const existing = pairMap.get(key);
+      // Keep earliest purchase_date within this week for stable dimensions.
+      // For has_funnel_quest_id: OR across all purchases — if any purchase in the
+      // week has a funnel quest, the cohort row should reflect that.
+      const hasQuest = r.has_funnel_quest_id === true || r.has_funnel_quest_id === 'true';
+      if (!existing || pDate < existing._date) {
+        pairMap.set(key, { ...r, _date: pDate, _week: week, _has_quest: hasQuest });
+      } else {
+        // Later purchase in the same week — OR the quest flag
+        if (hasQuest) existing._has_quest = true;
+      }
+    }
+
+    try {
+      while ((bytesRead = fs.readSync(fd, buf, 0, CHUNK, null)) > 0) {
+        const text = leftover + buf.subarray(0, bytesRead).toString('utf-8');
+        const lines = text.split('\n');
+        leftover = lines.pop() ?? '';
+        for (const line of lines) {
+          const t = line.trim();
+          if (!t) continue;
+          try { processRow(JSON.parse(t)); } catch { continue; }
+        }
+      }
+      // flush leftover
+      const t = leftover.trim();
+      if (t) {
+        try { processRow(JSON.parse(t)); } catch { /* ignore */ }
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO purchase_cohorts (
+        user_id, purchase_week, purchase_date,
+        days_to_login, days_to_activation,
+        traffic_source, campaign_type, payment_frequency, device_category,
+        has_discount, order_amount, product_funnel,
+        is_mc_funnel, is_vsl_funnel, is_first_order,
+        order_type, place_in_funnel, product_type, has_funnel_quest,
+        product_name
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `);
+
+    const insertAll = db.transaction(() => {
+      for (const r of pairMap.values()) {
+        const userId = r.user_id as string;
+        const pDate = r._date as string;
+        const week = r._week as string;
+
+        const rawLogin = r.days_to_first_login;
+        const daysLogin = rawLogin !== undefined && rawLogin !== null && rawLogin !== ''
+          ? parseInt(String(rawLogin), 10) : null;
+        const loginVal = daysLogin !== null && !isNaN(daysLogin) ? daysLogin : null;
+
+        const rawAct = r.days_to_first_activation;
+        const daysAct = rawAct !== undefined && rawAct !== null && rawAct !== ''
+          ? parseInt(String(rawAct), 10) : null;
+        const actVal = daysAct !== null && !isNaN(daysAct) ? daysAct : null;
+
+        const orderAmt = r.order_amount !== undefined && r.order_amount !== null
+          ? parseFloat(String(r.order_amount)) : null;
+
+        // Normalise payment frequency: "1" → "Monthly", "12" → "Yearly", "36" → "3-Year"
+        const rawFreq = String(r.payment_frequency ?? '');
+        const freq = rawFreq === '1' ? 'Monthly' : rawFreq === '12' ? 'Yearly' : rawFreq === '36' ? '3-Year' : rawFreq || null;
+
+        const trafficSrc = (r.unified_traffic_source as string) || null;
+        const campaignType = (r.campaign_type as string) || null;
+        const device = (r.device_category as string) || null;
+        const funnel = (r.product_funnel as string) || null;
+        const hasDiscount = r.discount_id !== undefined && r.discount_id !== null ? 1 : 0;
+        const isMC = r.is_mc_funnel === true || r.is_mc_funnel === 'true' ? 1 : 0;
+        const isVSL = r.is_vsl_funnel === true || r.is_vsl_funnel === 'true' ? 1 : 0;
+        const isFirst = r.is_first_order === true || r.is_first_order === 'true' ? 1 : 0;
+        const orderType = (r.order_type as string) || null;
+        const placeInFunnel = (r.place_in_funnel as string) || null;
+        const productType = (r.product_type as string) || null;
+        // Use the OR-merged flag (_has_quest) computed across all purchases this week
+        const hasFunnelQuest = r._has_quest ? 1 : 0;
+        const productName = (r.product_name as string) || null;
+
+        insert.run(
+          userId, week, pDate,
+          loginVal, actVal,
+          trafficSrc, campaignType, freq, device,
+          hasDiscount, isNaN(orderAmt ?? NaN) ? null : orderAmt,
+          funnel, isMC, isVSL, isFirst,
+          orderType, placeInFunnel, productType, hasFunnelQuest,
+          productName
+        );
+      }
+    });
+
+    insertAll();
+  } catch (e) {
+    console.error('[purchase-metrics] seed error:', e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Filters
+// ---------------------------------------------------------------------------
+
+export interface PurchaseFilters {
+  traffic_source?: string;
+  campaign_type?: string;
+  payment_frequency?: string;
+  device_category?: string;
+  has_discount?: 'yes' | 'no';
+  min_price?: number;
+  max_price?: number;
+  product_funnel?: string;
+  is_mc_funnel?: '1';
+  is_vsl_funnel?: '1';
+  is_first_order?: '1';
+  order_type?: string;
+  place_in_funnel?: string;
+  product_type?: string;
+  has_funnel_quest?: 'yes' | 'no';
+  product_name?: string;
+}
+
+function buildWhere(filters: PurchaseFilters): { where: string; params: unknown[] } {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+
+  if (filters.traffic_source) {
+    clauses.push('traffic_source = ?');
+    params.push(filters.traffic_source);
+  }
+  if (filters.campaign_type) {
+    clauses.push('campaign_type = ?');
+    params.push(filters.campaign_type);
+  }
+  if (filters.payment_frequency) {
+    clauses.push('payment_frequency = ?');
+    params.push(filters.payment_frequency);
+  }
+  if (filters.device_category) {
+    clauses.push('device_category = ?');
+    params.push(filters.device_category);
+  }
+  if (filters.has_discount === 'yes') {
+    clauses.push('has_discount = 1');
+  } else if (filters.has_discount === 'no') {
+    clauses.push('has_discount = 0');
+  }
+  if (filters.min_price !== undefined) {
+    clauses.push('order_amount >= ?');
+    params.push(filters.min_price);
+  }
+  if (filters.max_price !== undefined) {
+    clauses.push('order_amount <= ?');
+    params.push(filters.max_price);
+  }
+  if (filters.product_funnel) {
+    clauses.push('product_funnel = ?');
+    params.push(filters.product_funnel);
+  }
+  if (filters.is_mc_funnel === '1') {
+    clauses.push('is_mc_funnel = 1');
+  }
+  if (filters.is_vsl_funnel === '1') {
+    clauses.push('is_vsl_funnel = 1');
+  }
+  if (filters.is_first_order === '1') {
+    clauses.push('is_first_order = 1');
+  }
+  if (filters.order_type) {
+    clauses.push('order_type = ?');
+    params.push(filters.order_type);
+  }
+  if (filters.place_in_funnel) {
+    clauses.push('place_in_funnel = ?');
+    params.push(filters.place_in_funnel);
+  }
+  if (filters.product_type) {
+    clauses.push('product_type = ?');
+    params.push(filters.product_type);
+  }
+  if (filters.has_funnel_quest === 'yes') {
+    clauses.push('has_funnel_quest = 1');
+  } else if (filters.has_funnel_quest === 'no') {
+    clauses.push('has_funnel_quest = 0');
+  }
+  if (filters.product_name) {
+    clauses.push('product_name = ?');
+    params.push(filters.product_name);
+  }
+
+  return {
+    where: clauses.length > 0 ? 'WHERE ' + clauses.join(' AND ') : '',
+    params,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
+
+export interface WeeklyMetricRow {
+  week: string;       // YYYY-MM-DD (Monday)
+  weekLabel: string;  // e.g. "Feb 23"
+  total: number;
+  loginEligible: number; // rows where order_type IN ('New','Trial') AND is_first_order=1
+  day0LoginPct: number;
+  day7LoginPct: number;
+  day15ActPct: number;
+  day30ActPct: number;
+  isMature30: boolean; // cohort is 30+ days old
+  isMature15: boolean;
+  isMature7: boolean;
+}
+
+const SNAPSHOT_DATE = '2026-08-21';
+
+export function getWeeklyMetrics(filters: PurchaseFilters = {}): WeeklyMetricRow[] {
+  const db = getDb();
+  const { where, params } = buildWhere(filters);
+
+  // Login metrics denominator: only New/Trial first orders (matches BQ definition)
+  const rows = db.prepare(`
+    SELECT
+      purchase_week as week,
+      COUNT(*) as total,
+      SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN 1 ELSE 0 END) as login_eligible,
+      ROUND(
+        SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 AND days_to_login IS NOT NULL AND days_to_login = 0 THEN 1.0 ELSE 0 END)
+        * 100.0 / NULLIF(SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN 1 ELSE 0 END), 0)
+      , 1) as day0_login,
+      ROUND(
+        SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 AND days_to_login IS NOT NULL AND days_to_login <= 7 THEN 1.0 ELSE 0 END)
+        * 100.0 / NULLIF(SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN 1 ELSE 0 END), 0)
+      , 1) as day7_login,
+      ROUND(SUM(CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN 1.0 ELSE 0 END) * 100.0 / COUNT(*), 1) as day15_act,
+      ROUND(SUM(CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 30 THEN 1.0 ELSE 0 END) * 100.0 / COUNT(*), 1) as day30_act
+    FROM purchase_cohorts
+    ${where}
+    GROUP BY purchase_week
+    ORDER BY purchase_week ASC
+  `).all(...params) as {
+    week: string;
+    total: number;
+    login_eligible: number;
+    day0_login: number;
+    day7_login: number;
+    day15_act: number;
+    day30_act: number;
+  }[];
+
+  return rows.map(r => {
+    const daysOld = Math.floor(
+      (new Date(SNAPSHOT_DATE).getTime() - new Date(r.week).getTime()) / (1000 * 60 * 60 * 24)
+    );
+    return {
+      week: r.week,
+      weekLabel: new Date(r.week + 'T00:00:00Z').toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric', timeZone: 'UTC',
+      }),
+      total: r.total,
+      loginEligible: r.login_eligible ?? 0,
+      day0LoginPct: r.day0_login ?? 0,
+      day7LoginPct: r.day7_login ?? 0,
+      day15ActPct: r.day15_act ?? 0,
+      day30ActPct: r.day30_act ?? 0,
+      isMature7: daysOld >= 14,  // need a full week + buffer
+      isMature15: daysOld >= 22,
+      isMature30: daysOld >= 37,
+    };
+  });
+}
+
+export interface FilterOptions {
+  trafficSources: string[];
+  campaignTypes: string[];
+  paymentFrequencies: string[];
+  devices: string[];
+  funnels: string[];
+  orderTypes: string[];
+  placeInFunnels: string[];
+  productTypes: string[];
+  productNames: string[];
+}
+
+export function getFilterOptions(): FilterOptions {
+  const db = getDb();
+  const distinct = (col: string) =>
+    (db.prepare(`SELECT DISTINCT ${col} as v FROM purchase_cohorts WHERE ${col} IS NOT NULL ORDER BY v`).all() as { v: string }[])
+      .map(r => r.v)
+      .filter(Boolean);
+
+  return {
+    trafficSources: distinct('traffic_source'),
+    campaignTypes: distinct('campaign_type'),
+    paymentFrequencies: distinct('payment_frequency'),
+    devices: distinct('device_category'),
+    funnels: distinct('product_funnel'),
+    orderTypes: distinct('order_type'),
+    placeInFunnels: distinct('place_in_funnel'),
+    productTypes: distinct('product_type'),
+    productNames: distinct('product_name'),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Engage Team — Activation root cause analysis
+// ---------------------------------------------------------------------------
+
+export interface SegmentRate {
+  total: number;
+  day15Rate: number;
+  prevDay15Rate: number | null;
+  prevTotal: number;
+}
+
+export interface ProductShift {
+  productName: string;
+  prevShare: number;      // % of total volume in prior 4-week window
+  recentShare: number;    // % of total volume in recent 4-week window
+  prevDay15: number;      // Day 15 rate in prior window
+  recentDay15: number;    // Day 15 rate in recent window
+  recentCount: number;    // user count in recent window
+  prevQuestShare: number;    // % with funnel quest in prior window
+  recentQuestShare: number;  // % with funnel quest in recent window
+}
+
+export interface DropoffAnalysis {
+  weekRange: { min: string; max: string };
+  overall: SegmentRate;
+  // MC funnel split
+  mcFunnel: SegmentRate;
+  nonMcFunnel: SegmentRate;
+  // Funnel quest split (uses has_funnel_quest column)
+  hasQuest: SegmentRate;
+  noQuest: SegmentRate;
+  // Payment frequency — three separate buckets
+  monthlyCustomers: SegmentRate;
+  annualCustomers: SegmentRate;
+  threeYearCustomers: SegmentRate;
+  // Problem segment: MC + no quest
+  problemSegment: SegmentRate;
+  // Best segment: non-MC + has quest
+  bestSegment: SegmentRate;
+  // Top products by recent volume, with share/rate changes vs prior window
+  topProductShifts: ProductShift[];
+}
+
+/** Return the YYYY-MM-DD of the Monday n weeks before the given Monday */
+function weeksBefore(monday: string, n: number): string {
+  const d = new Date(monday + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - 7 * n);
+  return d.toISOString().substring(0, 10);
+}
+
+export function getLoginDropoffAnalysis(filters: PurchaseFilters = {}): DropoffAnalysis | null {
+  const db = getDb();
+
+  // Use the 4 most-recent COMPLETE weeks (excluding the current partial week,
+  // which has < 7 days of data and inflates the apparent decline).
+  // Immature weeks (not yet 15+ days old) ARE included — their partially-measured
+  // rates are fine for root-cause direction, just not for absolute precision.
+  const completedCutoff = new Date(SNAPSHOT_DATE);
+  completedCutoff.setUTCDate(completedCutoff.getUTCDate() - 7);
+  const completedCutoffStr = completedCutoff.toISOString().substring(0, 10);
+
+  const recentRows = db.prepare(`
+    SELECT DISTINCT purchase_week FROM purchase_cohorts
+    WHERE purchase_week <= ?
+    ORDER BY purchase_week DESC LIMIT 4
+  `).all(completedCutoffStr) as { purchase_week: string }[];
+
+  if (recentRows.length === 0) return null;
+
+  const maxWeek = recentRows[0].purchase_week;
+  const minWeek = recentRows[recentRows.length - 1].purchase_week;
+  // Previous window: 4 weeks immediately before the current 4-week window
+  const prevMaxWeek = weeksBefore(minWeek, 1);
+  const prevMinWeek = weeksBefore(minWeek, 4);
+
+  const { where, params } = buildWhere(filters);
+
+  function makeWhere(wMin: string, wMax: string, extra = ''): { clause: string; p: unknown[] } {
+    const base = where ? `${where} AND purchase_week BETWEEN ? AND ?` : `WHERE purchase_week BETWEEN ? AND ?`;
+    return {
+      clause: extra ? `${base} AND ${extra}` : base,
+      p: [...params, wMin, wMax],
+    };
+  }
+
+  function segmentRate(wMin: string, wMax: string, extra = ''): { total: number; day15Rate: number } {
+    const { clause, p } = makeWhere(wMin, wMax, extra);
+    const r = db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        ROUND(SUM(CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN 1.0 ELSE 0 END) * 100.0 / COUNT(*), 1) as day15
+      FROM purchase_cohorts ${clause}
+    `).get(...p) as { total: number; day15: number };
+    return { total: r.total, day15Rate: r.day15 ?? 0 };
+  }
+
+  function buildSegmentRate(extra: string): SegmentRate {
+    const cur = segmentRate(minWeek, maxWeek, extra);
+    const prev = segmentRate(prevMinWeek, prevMaxWeek, extra);
+    return {
+      total: cur.total,
+      day15Rate: cur.day15Rate,
+      prevDay15Rate: prev.total > 0 ? prev.day15Rate : null,
+      prevTotal: prev.total,
+    };
+  }
+
+  // Per-product share + Day 15 rate for the recent and prior windows.
+  // Returns rows ordered by recent count desc.
+  function productWindowData(wMin: string, wMax: string): {
+    productName: string; cnt: number; day15: number; questShare: number;
+  }[] {
+    const { clause, p } = makeWhere(wMin, wMax, `product_name IS NOT NULL`);
+    return (db.prepare(`
+      SELECT
+        product_name,
+        COUNT(*) as cnt,
+        ROUND(SUM(CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN 1.0 ELSE 0 END) * 100.0 / COUNT(*), 1) as day15,
+        ROUND(SUM(CASE WHEN has_funnel_quest = 1 THEN 1.0 ELSE 0 END) * 100.0 / COUNT(*), 1) as quest_share
+      FROM purchase_cohorts ${clause}
+      GROUP BY product_name
+      ORDER BY cnt DESC
+    `).all(...p) as { product_name: string; cnt: number; day15: number; quest_share: number }[])
+      .map(r => ({ productName: r.product_name, cnt: r.cnt, day15: r.day15 ?? 0, questShare: r.quest_share ?? 0 }));
+  }
+
+  const recentProducts = productWindowData(minWeek, maxWeek);
+  const prevProducts = productWindowData(prevMinWeek, prevMaxWeek);
+  const recentTotal = recentProducts.reduce((s, r) => s + r.cnt, 0);
+  const prevTotal = prevProducts.reduce((s, r) => s + r.cnt, 0);
+  const prevMap = new Map(prevProducts.map(r => [r.productName, r]));
+
+  const topProductShifts: ProductShift[] = recentProducts.slice(0, 8).map(r => {
+    const p = prevMap.get(r.productName);
+    return {
+      productName: r.productName,
+      recentShare: recentTotal > 0 ? Math.round(r.cnt / recentTotal * 1000) / 10 : 0,
+      recentDay15: r.day15,
+      recentCount: r.cnt,
+      recentQuestShare: r.questShare,
+      prevShare: p && prevTotal > 0 ? Math.round(p.cnt / prevTotal * 1000) / 10 : 0,
+      prevDay15: p ? p.day15 : 0,
+      prevQuestShare: p ? p.questShare : 0,
+    };
+  });
+
+  return {
+    weekRange: { min: minWeek, max: maxWeek },
+    overall:           buildSegmentRate(''),
+    mcFunnel:          buildSegmentRate('is_mc_funnel = 1'),
+    nonMcFunnel:       buildSegmentRate('is_mc_funnel = 0'),
+    hasQuest:          buildSegmentRate('has_funnel_quest = 1'),
+    noQuest:           buildSegmentRate('has_funnel_quest = 0'),
+    monthlyCustomers:  buildSegmentRate(`payment_frequency = 'Monthly'`),
+    annualCustomers:   buildSegmentRate(`payment_frequency = 'Yearly'`),
+    threeYearCustomers: buildSegmentRate(`payment_frequency = '3-Year'`),
+    problemSegment:    buildSegmentRate(`is_mc_funnel = 1 AND has_funnel_quest = 0`),
+    bestSegment:       buildSegmentRate(`is_mc_funnel = 0 AND has_funnel_quest = 1`),
+    topProductShifts,
+  };
+}

@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { encodeSession, nameFromEmail } from '@/lib/auth';
 
+const LOGIN_PASSWORD = 'mindvalleyproduct';
+
 export async function POST(request: NextRequest) {
   const body = await request.json();
-  const { email } = body;
+  const { email, password } = body;
 
   if (!email || typeof email !== 'string') {
     return NextResponse.json({ error: 'Email is required' }, { status: 400 });
@@ -18,6 +20,10 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (!password || password !== LOGIN_PASSWORD) {
+    return NextResponse.json({ error: 'Incorrect password.' }, { status: 403 });
+  }
+
   const session = {
     name: nameFromEmail(normalized),
     email: normalized,
@@ -25,7 +31,7 @@ export async function POST(request: NextRequest) {
   };
   const encoded = encodeSession(session);
 
-  const response = NextResponse.json({ ok: true, redirectTo: '/dashboard' });
+  const response = NextResponse.json({ ok: true, redirectTo: '/dashboard/activation/purchase-cohorts' });
   response.cookies.set('mv_session', encoded, {
     httpOnly: true,
     sameSite: 'lax',

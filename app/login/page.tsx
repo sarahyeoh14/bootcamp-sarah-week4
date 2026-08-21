@@ -6,19 +6,24 @@ import { useRouter } from 'next/navigation';
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const trimmed = email.trim().toLowerCase();
+    const trimmedEmail = email.trim().toLowerCase();
 
-    if (!trimmed) {
+    if (!trimmedEmail) {
       setError('Please enter your Mindvalley email.');
       return;
     }
-    if (!trimmed.endsWith('@mindvalley.com')) {
+    if (!trimmedEmail.endsWith('@mindvalley.com')) {
       setError('Access is restricted to @mindvalley.com email addresses.');
+      return;
+    }
+    if (!password) {
+      setError('Please enter your password.');
       return;
     }
 
@@ -29,7 +34,7 @@ export default function LoginPage() {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: trimmed }),
+        body: JSON.stringify({ email: trimmedEmail, password }),
       });
 
       const data = await res.json();
@@ -64,7 +69,7 @@ export default function LoginPage() {
         {/* Card */}
         <div className="bg-slate-800/60 backdrop-blur border border-slate-700/50 rounded-2xl p-8 shadow-2xl">
           <h2 className="text-base font-semibold text-white mb-1">Welcome back</h2>
-          <p className="text-slate-400 text-sm mb-6">Sign in with your Mindvalley email to continue.</p>
+          <p className="text-slate-400 text-sm mb-6">Sign in with your Mindvalley credentials.</p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
@@ -83,6 +88,21 @@ export default function LoginPage() {
               />
             </div>
 
+            <div>
+              <label htmlFor="password" className="block text-sm font-medium text-slate-300 mb-1.5">
+                Password
+              </label>
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter password"
+                className="w-full px-4 py-2.5 rounded-lg bg-slate-700/80 border border-slate-600 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition text-sm"
+                autoComplete="current-password"
+              />
+            </div>
+
             {error && (
               <div className="bg-red-900/40 border border-red-700/60 text-red-300 text-sm px-4 py-2.5 rounded-lg">
                 {error}
@@ -94,7 +114,7 @@ export default function LoginPage() {
               disabled={loading}
               className="w-full py-2.5 px-4 bg-violet-600 hover:bg-violet-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-lg transition text-sm shadow-lg shadow-violet-900/30"
             >
-              {loading ? 'Signing in…' : 'Enter Product Intelligence'}
+              {loading ? 'Signing in…' : 'Sign in'}
             </button>
           </form>
         </div>

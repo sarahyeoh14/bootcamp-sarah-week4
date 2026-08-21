@@ -1,0 +1,45 @@
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  seedPurchaseMetricsIfNeeded,
+  getWeeklyMetrics,
+  getFilterOptions,
+  getLoginDropoffAnalysis,
+  PurchaseFilters,
+} from '@/lib/purchase-metrics';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET(req: NextRequest) {
+  try {
+    seedPurchaseMetricsIfNeeded();
+
+    const sp = req.nextUrl.searchParams;
+
+    const filters: PurchaseFilters = {};
+    if (sp.get('traffic_source')) filters.traffic_source = sp.get('traffic_source')!;
+    if (sp.get('campaign_type')) filters.campaign_type = sp.get('campaign_type')!;
+    if (sp.get('payment_frequency')) filters.payment_frequency = sp.get('payment_frequency')!;
+    if (sp.get('device_category')) filters.device_category = sp.get('device_category')!;
+    if (sp.get('has_discount')) filters.has_discount = sp.get('has_discount') as 'yes' | 'no';
+    if (sp.get('min_price')) filters.min_price = Number(sp.get('min_price'));
+    if (sp.get('max_price')) filters.max_price = Number(sp.get('max_price'));
+    if (sp.get('product_funnel')) filters.product_funnel = sp.get('product_funnel')!;
+    if (sp.get('is_mc_funnel') === '1') filters.is_mc_funnel = '1';
+    if (sp.get('is_vsl_funnel') === '1') filters.is_vsl_funnel = '1';
+    if (sp.get('is_first_order') === '1') filters.is_first_order = '1';
+    if (sp.get('order_type')) filters.order_type = sp.get('order_type')!;
+    if (sp.get('place_in_funnel')) filters.place_in_funnel = sp.get('place_in_funnel')!;
+    if (sp.get('product_type')) filters.product_type = sp.get('product_type')!;
+    if (sp.get('has_funnel_quest')) filters.has_funnel_quest = sp.get('has_funnel_quest') as 'yes' | 'no';
+    if (sp.get('product_name')) filters.product_name = sp.get('product_name')!;
+
+    const weeks = getWeeklyMetrics(filters);
+    const options = sp.get('include_options') === '1' ? getFilterOptions() : null;
+    const dropoff = sp.get('include_dropoff') === '1' ? getLoginDropoffAnalysis(filters) : null;
+
+    return NextResponse.json({ weeks, options, dropoff });
+  } catch (e) {
+    console.error('[api/purchase-cohorts]', e);
+    return NextResponse.json({ error: 'Internal error' }, { status: 500 });
+  }
+}

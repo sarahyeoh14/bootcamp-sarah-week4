@@ -22,6 +22,17 @@ const JOURNEY_STAGES = [
     ),
   },
   {
+    label: 'Product North Star',
+    path: '/dashboard/activation/purchase-cohorts',
+    exact: false,
+    color: 'text-violet-400',
+    icon: (
+      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" />
+      </svg>
+    ),
+  },
+  {
     label: 'Acquisition',
     path: '/dashboard/acquisition',
     exact: false,
@@ -35,7 +46,7 @@ const JOURNEY_STAGES = [
   {
     label: 'Activation',
     path: '/dashboard/activation',
-    exact: false,
+    exact: true,
     color: 'text-violet-400',
     icon: (
       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -51,17 +62,6 @@ const JOURNEY_STAGES = [
     icon: (
       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18L9 11.25l4.306 4.307a11.95 11.95 0 015.814-5.519l2.74-1.22m0 0l-5.94-2.28m5.94 2.28l-2.28 5.941" />
-      </svg>
-    ),
-  },
-  {
-    label: 'Product Metrics',
-    path: '/dashboard/product',
-    exact: false,
-    color: 'text-rose-400',
-    icon: (
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3v11.25A2.25 2.25 0 006 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0118 16.5h-2.25m-7.5 0h7.5m-7.5 0l-1 3m8.5-3l1 3m0 0l.5 1.5m-.5-1.5h-9.5m0 0l-.5 1.5M9 11.25v1.5M12 9v3.75m3-6v6" />
       </svg>
     ),
   },
@@ -188,6 +188,29 @@ function SidebarContent({
           <ul className="space-y-0.5">
             {JOURNEY_STAGES.map((stage) => {
               const active = isActive(stage.path, stage.exact);
+              if ('sub' in stage && stage.sub) {
+                return (
+                  <li key={stage.path}>
+                    <Link
+                      href={stage.path}
+                      onClick={() => onClose?.()}
+                      className={`flex items-center gap-2 pl-9 pr-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                        active
+                          ? 'bg-slate-800 text-violet-300'
+                          : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/40'
+                      }`}
+                    >
+                      <span className={active ? 'text-violet-300' : stage.color}>
+                        {stage.icon}
+                      </span>
+                      {stage.label}
+                      {active && (
+                        <span className="ml-auto w-1 h-1 rounded-full bg-violet-400" />
+                      )}
+                    </Link>
+                  </li>
+                );
+              }
               return (
                 <li key={stage.path}>
                   <Link
