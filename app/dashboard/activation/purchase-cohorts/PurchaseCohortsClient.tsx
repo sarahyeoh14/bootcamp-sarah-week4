@@ -583,9 +583,13 @@ export default function PurchaseCohortsClient() {
         const mixShiftPp = dropoff.topProductShifts.reduce((sum, p) =>
           sum + ((p.recentShare - p.prevShare) / 100) * p.prevDay15, 0);
 
-        // Manifesting internal rate impact: prevShare/100 × Δrate
-        const manifestingRatePp = manifesting
-          ? (manifesting.prevShare / 100) * (manifesting.recentDay15 - manifesting.prevDay15)
+        // F3: how much Manifesting's advantage over the overall average shrank, weighted by share
+        // = recentShare × (recentDeviation - prevDeviation)
+        const manifestingRatePp = manifesting && dropoff.overall.prevDay15Rate !== null
+          ? (manifesting.recentShare / 100) * (
+              (manifesting.recentDay15 - dropoff.overall.day15Rate) -
+              (manifesting.prevDay15 - dropoff.overall.prevDay15Rate)
+            )
           : 0;
 
         // F2: combined payment frequency impact
@@ -608,10 +612,42 @@ export default function PurchaseCohortsClient() {
             </div>
             <div className="p-5 space-y-4">
 
-              {/* Finding 1 — Mix shift */}
+              {/* Finding 1 — Annual payment (largest impact) */}
+              <div className="border border-amber-100 bg-amber-50 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">Finding 1</span>
+                  <span className="text-sm font-semibold text-gray-800 flex-1">Annual customers are growing — and activate at lower rates</span>
+                  <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">{fmtPp(paymentMixPp)}</span>
+                </div>
+                <p className="text-xs text-gray-600">
+                  Monthly customers activate at <strong>{dropoff.monthlyCustomers.day15Rate}%</strong> vs Annual at <strong>{dropoff.annualCustomers.day15Rate}%</strong> — a <strong>{annualGap}pp gap</strong>. Annual&apos;s share of the cohort grew from the prior period
+                  {dropoff.annualCustomers.prevDay15Rate !== null && (
+                    <span> (annual: {dropoff.annualCustomers.prevDay15Rate}% → {dropoff.annualCustomers.day15Rate}%)</span>
+                  )}, pulling the blended average down.
+                </p>
+              </div>
+
+              {/* Finding 2 — Manifesting internal decline */}
+              {manifesting && (
+                <div className="border border-violet-100 bg-violet-50 rounded-xl p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-bold text-violet-700 bg-violet-100 px-2 py-0.5 rounded-full">Finding 2</span>
+                    <span className="text-sm font-semibold text-gray-800 flex-1">Manifesting Pathway Day 15 activation is declining</span>
+                    <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">{fmtPp(manifestingRatePp)}</span>
+                  </div>
+                  <p className="text-xs text-gray-600 mb-2">
+                    Day 15 rate within Manifesting Pathway fell from <strong>{manifesting.prevDay15}%</strong> to <strong>{manifesting.recentDay15}%</strong>. This is the largest product by volume ({manifesting.recentShare}% of cohort, {manifesting.recentCount.toLocaleString()} users).
+                  </p>
+                  <div className="text-xs text-violet-800 bg-violet-100 rounded-lg px-3 py-2">
+                    <strong>Note — empty funnel quest ID:</strong> Manifesting Pathway customers have essentially no funnel quest IDs. As the product grows to {manifesting.recentShare}% of the cohort, it amplifies the overall mix toward the lower-activation &quot;no quest&quot; segment. The internal rate decline compounds this — more buyers in a product with no quest content to drive Day 15 activation.
+                  </div>
+                </div>
+              )}
+
+              {/* Finding 3 — Mix shift (smallest impact) */}
               <div className="border border-orange-100 bg-orange-50 rounded-xl p-4">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs font-bold text-orange-700 bg-orange-100 px-2 py-0.5 rounded-full">Finding 1</span>
+                  <span className="text-xs font-bold text-orange-700 bg-orange-100 px-2 py-0.5 rounded-full">Finding 3</span>
                   <span className="text-sm font-semibold text-gray-800 flex-1">Product mix shifted away from high-activation products</span>
                   <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">{fmtPp(mixShiftPp)}</span>
                 </div>
@@ -654,38 +690,6 @@ export default function PurchaseCohortsClient() {
                   </table>
                 </div>
               </div>
-
-              {/* Finding 2 — Annual growing */}
-              <div className="border border-amber-100 bg-amber-50 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">Finding 2</span>
-                  <span className="text-sm font-semibold text-gray-800 flex-1">Annual customers are growing — and activate at lower rates</span>
-                  <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">{fmtPp(paymentMixPp)}</span>
-                </div>
-                <p className="text-xs text-gray-600">
-                  Monthly customers activate at <strong>{dropoff.monthlyCustomers.day15Rate}%</strong> vs Annual at <strong>{dropoff.annualCustomers.day15Rate}%</strong> — a <strong>{annualGap}pp gap</strong>. Annual&apos;s share of the cohort grew from the prior period
-                  {dropoff.annualCustomers.prevDay15Rate !== null && (
-                    <span> (annual: {dropoff.annualCustomers.prevDay15Rate}% → {dropoff.annualCustomers.day15Rate}%)</span>
-                  )}, pulling the blended average down.
-                </p>
-              </div>
-
-              {/* Finding 3 — Manifesting Pathway internal decline */}
-              {manifesting && (
-                <div className="border border-violet-100 bg-violet-50 rounded-xl p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xs font-bold text-violet-700 bg-violet-100 px-2 py-0.5 rounded-full">Finding 3</span>
-                    <span className="text-sm font-semibold text-gray-800 flex-1">Manifesting Pathway&apos;s internal rate is declining</span>
-                    <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">{fmtPp(manifestingRatePp)}</span>
-                  </div>
-                  <p className="text-xs text-gray-600 mb-2">
-                    Day 15 rate within Manifesting Pathway fell from <strong>{manifesting.prevDay15}%</strong> to <strong>{manifesting.recentDay15}%</strong>. This is the largest product by volume ({manifesting.recentShare}% of cohort, {manifesting.recentCount.toLocaleString()} users).
-                  </p>
-                  <div className="text-xs text-violet-800 bg-violet-100 rounded-lg px-3 py-2">
-                    <strong>Note — empty funnel quest ID:</strong> Manifesting Pathway customers have essentially no funnel quest IDs. As the product grows to {manifesting.recentShare}% of the cohort, it amplifies the overall mix toward the lower-activation &quot;no quest&quot; segment. The internal rate decline compounds this — more buyers in a product with no quest content to drive Day 15 activation.
-                  </div>
-                </div>
-              )}
 
             </div>
           </div>
