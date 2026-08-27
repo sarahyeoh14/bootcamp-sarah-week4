@@ -15,10 +15,10 @@ import path from 'path';
 import fs from 'fs';
 import { getDb } from './db';
 
-const DATA_PATH = path.join(process.cwd(), 'data', 'l26weeks_product_metric_v3.json');
+const DATA_PATH = path.join(process.cwd(), 'data', 'l52weeks_product_metric_v2.json');
 
 // Schema version — bump whenever the table structure changes so the DB is rebuilt.
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 9;
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -251,7 +251,8 @@ export interface PurchaseFilters {
 }
 
 function buildWhere(filters: PurchaseFilters): { where: string; params: unknown[] } {
-  const clauses: string[] = [];
+  // Exclude records with no order_type — data-quality gaps in the export
+  const clauses: string[] = ['order_type IS NOT NULL'];
   const params: unknown[] = [];
 
   if (filters.traffic_source) {
@@ -342,7 +343,7 @@ export interface WeeklyMetricRow {
   isMature7: boolean;
 }
 
-const SNAPSHOT_DATE = '2026-08-21';
+export const SNAPSHOT_DATE = '2026-08-26';
 
 export function getWeeklyMetrics(filters: PurchaseFilters = {}): WeeklyMetricRow[] {
   const db = getDb();
@@ -473,6 +474,152 @@ export interface DropoffAnalysis {
   bestSegment: SegmentRate;
   // Top products by recent volume, with share/rate changes vs prior window
   topProductShifts: ProductShift[];
+}
+
+// ---------------------------------------------------------------------------
+// Segment comparison (last 4 complete weeks)
+// ---------------------------------------------------------------------------
+
+export interface SegmentRow {
+  label: string;
+  total: number;
+  loginEligible: number;
+  day7LoginPct: number | null;
+  day15ActPct: number | null;
+  // 52-week baseline averages
+  baselineTotal: number;
+  baselineDay7LoginPct: number | null;
+  baselineDay15ActPct: number | null;
+}
+
+export interface SegmentGroup {
+  dimension: string;
+  rows: SegmentRow[];
+}
+
+export function getSegmentComparison(filters: PurchaseFilters = {}, weeksCount = 4): SegmentGroup[] {
+  const db = getDb();
+  const { where, params } = buildWhere(filters);
+
+  const completedCutoff = new Date(SNAPSHOT_DATE);
+  completedCutoff.setUTCDate(completedCutoff.getUTCDate() - 7);
+  const cutoffStr = completedCutoff.toISOString().substring(0, 10);
+
+  // Recent N complete weeks
+  const recentWeekRows = db.prepare(
+    `SELECT DISTINCT purchase_week FROM purchase_cohorts WHERE purchase_week <= ? ORDER BY purchase_week DESC LIMIT ${weeksCount}`
+  ).all(cutoffStr) as { purchase_week: string }[];
+  if (recentWeekRows.length === 0) return [];
+  const recentMax = recentWeekRows[0].purchase_week;
+  const recentMin = recentWeekRows[recentWeekRows.length - 1].purchase_week;
+
+  // Baseline: 12 weeks immediately before the recent window (weeks 5–16 looking back)
+  // Skip the recent N weeks, then take the next 12.
+  const baselineWeekRows = db.prepare(
+    `SELECT DISTINCT purchase_week FROM purchase_cohorts WHERE purchase_week < ? ORDER BY purchase_week DESC LIMIT 12`
+  ).all(recentMin) as { purchase_week: string }[];
+  const baselineMax = baselineWeekRows[0]?.purchase_week ?? recentMax;
+  const baselineMin = baselineWeekRows[baselineWeekRows.length - 1]?.purchase_week ?? recentMin;
+
+  const recentRangeClause = where
+    ? `${where} AND purchase_week BETWEEN ? AND ?`
+    : `WHERE purchase_week BETWEEN ? AND ?`;
+  const recentRangeParams: unknown[] = [...params, recentMin, recentMax];
+
+  const baselineRangeClause = where
+    ? `${where} AND purchase_week BETWEEN ? AND ?`
+    : `WHERE purchase_week BETWEEN ? AND ?`;
+  const baselineRangeParams: unknown[] = [...params, baselineMin, baselineMax];
+
+  const SELECT_METRICS = `
+    COUNT(*) as total,
+    SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN 1 ELSE 0 END) as login_eligible,
+    ROUND(
+      SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 AND days_to_login IS NOT NULL AND days_to_login <= 7 THEN 1.0 ELSE 0 END)
+      * 100.0 / NULLIF(SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN 1 ELSE 0 END), 0)
+    , 1) as day7_login,
+    ROUND(SUM(CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN 1.0 ELSE 0 END) * 100.0 / COUNT(*), 1) as day15_act
+  `;
+
+  type RawMetrics = { total: number; login_eligible: number; day7_login: number; day15_act: number };
+  const EMPTY: RawMetrics = { total: 0, login_eligible: 0, day7_login: 0, day15_act: 0 };
+
+  function toRow(label: string, r: RawMetrics, b: RawMetrics): SegmentRow {
+    return {
+      label,
+      total: r.total,
+      loginEligible: r.login_eligible ?? 0,
+      day7LoginPct: (r.login_eligible ?? 0) > 0 ? (r.day7_login ?? 0) : null,
+      day15ActPct: r.total > 0 ? (r.day15_act ?? 0) : null,
+      baselineTotal: b.total,
+      baselineDay7LoginPct: (b.login_eligible ?? 0) > 0 ? (b.day7_login ?? 0) : null,
+      baselineDay15ActPct: b.total > 0 ? (b.day15_act ?? 0) : null,
+    };
+  }
+
+  function queryFixedRecent(extra: string): RawMetrics {
+    return (db.prepare(`SELECT ${SELECT_METRICS} FROM purchase_cohorts ${recentRangeClause} AND ${extra}`)
+      .get(...recentRangeParams) as RawMetrics) ?? EMPTY;
+  }
+
+  function queryFixedBaseline(extra: string): RawMetrics {
+    return (db.prepare(`SELECT ${SELECT_METRICS} FROM purchase_cohorts ${baselineRangeClause} AND ${extra}`)
+      .get(...baselineRangeParams) as RawMetrics) ?? EMPTY;
+  }
+
+  function queryGrouped(col: string, limit?: number): SegmentRow[] {
+    const limitClause = limit ? `LIMIT ${limit}` : '';
+    const recentRows = (db.prepare(`
+      SELECT ${col} as seg, ${SELECT_METRICS}
+      FROM purchase_cohorts ${recentRangeClause} AND ${col} IS NOT NULL AND ${col} != ''
+      GROUP BY ${col} ORDER BY total DESC ${limitClause}
+    `).all(...recentRangeParams) as ({ seg: string } & RawMetrics)[])
+      .filter(r => r.total >= 100);
+
+    if (recentRows.length === 0) return [];
+
+    const baselineRows = (db.prepare(`
+      SELECT ${col} as seg, ${SELECT_METRICS}
+      FROM purchase_cohorts ${baselineRangeClause} AND ${col} IS NOT NULL AND ${col} != ''
+      GROUP BY ${col}
+    `).all(...baselineRangeParams) as ({ seg: string } & RawMetrics)[]);
+    const baselineMap = new Map(baselineRows.map(r => [r.seg, r]));
+
+    return recentRows.map(r => toRow(r.seg, r, baselineMap.get(r.seg) ?? EMPTY));
+  }
+
+  const paymentRows = (
+    [
+      { label: 'Monthly', clause: `payment_frequency = 'Monthly'` },
+      { label: 'Yearly',  clause: `payment_frequency = 'Yearly'`  },
+      { label: '3-Year',  clause: `payment_frequency = '3-Year'`  },
+    ] as { label: string; clause: string }[]
+  ).map(({ label, clause }) => {
+    const r = queryFixedRecent(clause);
+    const b = queryFixedBaseline(clause);
+    return r.total >= 100 ? toRow(label, r, b) : null;
+  }).filter((r): r is SegmentRow => r !== null);
+
+  const acquisitionRows = (
+    [
+      { label: 'MC · Evergreen',       clause: `is_mc_funnel = 1 AND campaign_type = 'Evergreen'` },
+      { label: 'MC · Product Launch',  clause: `is_mc_funnel = 1 AND campaign_type = 'Product Launch'` },
+      { label: 'VSL · Evergreen',      clause: `is_vsl_funnel = 1 AND campaign_type = 'Evergreen'` },
+      { label: 'VSL · Product Launch', clause: `is_vsl_funnel = 1 AND campaign_type = 'Product Launch'` },
+      { label: 'Organic',              clause: `is_mc_funnel = 0 AND is_vsl_funnel = 0` },
+    ] as { label: string; clause: string }[]
+  ).map(({ label, clause }) => {
+    const r = queryFixedRecent(clause);
+    const b = queryFixedBaseline(clause);
+    return r.total >= 100 ? toRow(label, r, b) : null;
+  }).filter((r): r is SegmentRow => r !== null);
+
+  return [
+    { dimension: 'Payment Plan',  rows: paymentRows },
+    { dimension: 'Product Type',  rows: queryGrouped('product_name', 10) },
+    { dimension: 'Acquisition',   rows: acquisitionRows },
+    { dimension: 'Device',        rows: queryGrouped('device_category') },
+  ].filter(g => g.rows.length > 0);
 }
 
 /** Return the YYYY-MM-DD of the Monday n weeks before the given Monday */

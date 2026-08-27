@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { Fragment, useState, useEffect, useCallback, useRef } from 'react';
 
 interface WeekRow {
   week: string;
@@ -44,6 +44,22 @@ interface ProductShift {
   recentCount: number;
   prevQuestShare: number;
   recentQuestShare: number;
+}
+
+interface SegmentRow {
+  label: string;
+  total: number;
+  loginEligible: number;
+  day7LoginPct: number | null;
+  day15ActPct: number | null;
+  baselineTotal: number;
+  baselineDay7LoginPct: number | null;
+  baselineDay15ActPct: number | null;
+}
+
+interface SegmentGroup {
+  dimension: string;
+  rows: SegmentRow[];
 }
 
 interface DropoffAnalysis {
@@ -90,8 +106,7 @@ const METRIC_DEFS: Record<Tab, { key: string; label: string; color: string; defi
       key: 'day7',
       label: 'Day 7 Login %',
       color: '#06b6d4',
-      definition: 'The share of new buyers who have logged in at least once within 7 days of purchase, capturing early habit formation.',
-      denominator: 'New & Trial first-orders only',
+      definition: 'The share of all buyers who have logged in at least once within 7 days of purchase, capturing early habit formation.',
     },
   ],
   engage: [
@@ -138,7 +153,7 @@ function TrendChart({ weeks, lines, loading }: { weeks: WeekRow[]; lines: LineSp
     return () => ro.disconnect();
   }, []);
 
-  const PAD = { top: 16, right: 24, bottom: 48, left: 40 };
+  const PAD = { top: 16, right: 64, bottom: 48, left: 40 };
   const H = 220;
   const W = chartW;
   const innerW = W - PAD.left - PAD.right;
@@ -153,6 +168,14 @@ function TrendChart({ weeks, lines, loading }: { weeks: WeekRow[]; lines: LineSp
   const yTicks = [50, 60, 70, 80, 90, 100];
   const step = Math.max(1, Math.round(n / 7));
   const xLabels = weeks.map((w, i) => ({ i, label: w.weekLabel })).filter((_, i) => i % step === 0 || i === n - 1);
+
+  // Right Y-axis — cohort size
+  const maxTotal = Math.max(...weeks.map(w => w.total), 1);
+  const rightYOf = (v: number) => PAD.top + innerH - (v / maxTotal) * innerH;
+  const fmtCount = (v: number) => v >= 1000 ? `${+(v / 1000).toFixed(1)}k` : String(v);
+  const rightTicks = [0, Math.round(maxTotal / 2), maxTotal];
+  const RX = W - PAD.right; // x-position of right axis line
+  const barW = Math.max(3, Math.round(innerW / Math.max(n, 1)) - 3);
 
   function pathFor(key: keyof WeekRow) {
     if (n === 0) return '';
@@ -185,6 +208,18 @@ function TrendChart({ weeks, lines, loading }: { weeks: WeekRow[]; lines: LineSp
               <text x={PAD.left - 6} y={yOf(v) + 4} fontSize={10} fill="#9ca3af" textAnchor="end">{v}%</text>
             </g>
           ))}
+          {/* Right Y-axis — cohort size */}
+          <line x1={RX} y1={PAD.top} x2={RX} y2={PAD.top + innerH} stroke="#e0e7ff" strokeWidth={1} />
+          {rightTicks.map(v => (
+            <g key={v}>
+              <line x1={RX} y1={rightYOf(v)} x2={RX + 4} y2={rightYOf(v)} stroke="#818cf8" strokeWidth={1} />
+              <text x={RX + 7} y={rightYOf(v) + 4} fontSize={10} fill="#6366f1" textAnchor="start" fontWeight={v === maxTotal ? '600' : 'normal'}>{fmtCount(v)}</text>
+            </g>
+          ))}
+          <text
+            x={RX + 7} y={PAD.top - 4}
+            fontSize={9} fill="#a5b4fc" textAnchor="start" letterSpacing="0.5"
+          >users</text>
           {xLabels.map(({ i, label }) => (
             <text key={i} x={xOf(i)} y={H - 8} fontSize={10} fill="#9ca3af" textAnchor="middle">{label}</text>
           ))}
@@ -192,6 +227,21 @@ function TrendChart({ weeks, lines, loading }: { weeks: WeekRow[]; lines: LineSp
           {(() => { const fi = weeks.findIndex(w => !w.isMature15); return fi >= 0 ? (
             <rect x={xOf(fi)} y={PAD.top} width={W - PAD.right - xOf(fi)} height={innerH} fill="#f5f3ff" opacity={0.5} />
           ) : null; })()}
+          {/* Volume bars — scaled to right Y-axis */}
+          {weeks.map((w, i) => {
+            const bh = Math.max(1, (w.total / maxTotal) * innerH);
+            return (
+              <rect key={i}
+                x={xOf(i) - barW / 2}
+                y={PAD.top + innerH - bh}
+                width={barW}
+                height={bh}
+                fill="#c7d2fe"
+                opacity={0.55}
+                rx={1.5}
+              />
+            );
+          })}
           {/* Lines */}
           {lines.map(l => (
             <path key={l.key} d={pathFor(l.key)} fill="none" stroke={l.color} strokeWidth={2.5}
@@ -212,9 +262,13 @@ function TrendChart({ weeks, lines, loading }: { weeks: WeekRow[]; lines: LineSp
       {tooltip && (
         <div className="pointer-events-none absolute z-10 bg-white border border-gray-200 rounded-xl shadow-lg p-3 text-xs min-w-[160px]"
           style={{ left: tooltip.x + 40 > chartW * 0.6 ? tooltip.x - 170 : tooltip.x + 16, top: 16 }}>
-          <div className="font-semibold text-gray-800 mb-2">
-            {tooltip.week.weekLabel}
-            <span className="ml-2 text-gray-400 font-normal">{tooltip.week.total.toLocaleString()} users</span>
+          <div className="font-semibold text-gray-800 mb-2">{tooltip.week.weekLabel}</div>
+          <div className="flex items-center justify-between gap-3 py-0.5 border-b border-gray-100 mb-1 pb-2">
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-2.5 rounded-sm inline-block bg-indigo-200" />
+              <span className="text-gray-600">Cohort size</span>
+            </div>
+            <span className="font-bold text-indigo-500">{tooltip.week.total.toLocaleString()}</span>
           </div>
           {lines.map(l => (
             <div key={l.key} className="flex items-center justify-between gap-3 py-0.5">
@@ -263,6 +317,142 @@ function SelectFilter({ label, value, options, onChange }: { label: string; valu
 }
 
 // ---------------------------------------------------------------------------
+// Segment comparison table
+// ---------------------------------------------------------------------------
+
+function rateColor(pct: number, lo: number, hi: number) {
+  if (pct >= hi) return { text: 'text-emerald-700 font-semibold', bg: 'bg-emerald-50' };
+  if (pct >= lo) return { text: 'text-amber-600 font-semibold', bg: 'bg-amber-50' };
+  return { text: 'text-red-600 font-semibold', bg: 'bg-red-50' };
+}
+
+function SegmentComparisonTable({
+  groups,
+  primaryMetric,
+  loading,
+}: {
+  groups: SegmentGroup[];
+  primaryMetric: 'day7' | 'day15';
+  loading: boolean;
+}) {
+  if (loading) {
+    return (
+      <div className="h-32 flex items-center justify-center">
+        <div className="w-7 h-7 rounded-full border-2 border-violet-200 border-t-violet-600 animate-spin" />
+      </div>
+    );
+  }
+  if (groups.length === 0) return null;
+
+  function delta(recent: number | null, baseline: number | null): number | null {
+    if (recent === null || baseline === null) return null;
+    return Math.round((recent - baseline) * 10) / 10;
+  }
+
+  function DeltaBadge({ d }: { d: number | null }) {
+    if (d === null) return null;
+    const positive = d > 0;
+    const neutral = d === 0;
+    return (
+      <span className={`ml-1 text-[10px] font-medium ${neutral ? 'text-gray-400' : positive ? 'text-emerald-600' : 'text-red-500'}`}>
+        {positive ? '+' : ''}{d}pp
+      </span>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-xs text-gray-400 uppercase tracking-wide border-b border-gray-100">
+            <th className="text-left px-5 py-3 font-medium">Segment</th>
+            <th className="text-right px-4 py-3 font-medium">Users</th>
+            <th className={`text-right px-4 py-3 font-medium ${primaryMetric === 'day7' ? 'text-cyan-600' : 'text-gray-400'}`}>
+              <div>Day 7 Login %</div>
+              <div className="text-[10px] normal-case tracking-normal text-gray-400 font-normal mt-0.5">recent · 12w avg</div>
+            </th>
+            <th className="text-right px-4 py-3 font-medium text-gray-400">Gap</th>
+            <th className={`text-right px-4 py-3 font-medium ${primaryMetric === 'day15' ? 'text-emerald-600' : 'text-gray-400'}`}>
+              <div>Day 15 Act %</div>
+              <div className="text-[10px] normal-case tracking-normal text-gray-400 font-normal mt-0.5">recent · 12w avg</div>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {groups.map((group, gi) => (
+            <Fragment key={gi}>
+              <tr className="bg-gray-50 border-t border-gray-100">
+                <td colSpan={5} className="px-5 py-2">
+                  <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">{group.dimension}</span>
+                </td>
+              </tr>
+              {group.rows.map((row) => {
+                const d7Colors = row.day7LoginPct !== null ? rateColor(row.day7LoginPct, 60, 80) : null;
+                const d15Colors = row.day15ActPct !== null ? rateColor(row.day15ActPct, 30, 50) : null;
+                const gap = row.day7LoginPct !== null && row.day15ActPct !== null
+                  ? Math.round((row.day7LoginPct - row.day15ActPct) * 10) / 10
+                  : null;
+                const d7Delta = delta(row.day7LoginPct, row.baselineDay7LoginPct);
+                const d15Delta = delta(row.day15ActPct, row.baselineDay15ActPct);
+                return (
+                  <tr key={`${gi}-${row.label}`} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+                    <td className="px-5 py-3 font-medium text-gray-800">{row.label}</td>
+                    <td className="px-4 py-3 text-right text-gray-500 tabular-nums align-top pt-3.5">
+                      {row.total.toLocaleString()}
+                    </td>
+                    <td className={`px-4 py-3 text-right tabular-nums ${primaryMetric === 'day7' ? '' : 'opacity-70'}`}>
+                      {row.day7LoginPct !== null && d7Colors ? (
+                        <>
+                          <span className={`inline-block px-2 py-0.5 rounded-md text-xs ${d7Colors.text} ${primaryMetric === 'day7' ? d7Colors.bg : ''}`}>
+                            {row.day7LoginPct}%
+                          </span>
+                          {row.baselineDay7LoginPct !== null && (
+                            <div className="text-[11px] text-gray-400 mt-1">
+                              {row.baselineDay7LoginPct}%<DeltaBadge d={d7Delta} />
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums align-top pt-3.5">
+                      {gap !== null ? (
+                        <span className={`text-xs font-medium ${gap > 15 ? 'text-red-500' : gap >= 10 ? 'text-amber-500' : 'text-gray-400'}`}>
+                          -{gap}pp
+                        </span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
+                    <td className={`px-4 py-3 text-right tabular-nums ${primaryMetric === 'day15' ? '' : 'opacity-70'}`}>
+                      {row.day15ActPct !== null && d15Colors ? (
+                        <>
+                          <span className={`inline-block px-2 py-0.5 rounded-md text-xs ${d15Colors.text} ${primaryMetric === 'day15' ? d15Colors.bg : ''}`}>
+                            {row.day15ActPct}%
+                          </span>
+                          {row.baselineDay15ActPct !== null && (
+                            <div className="text-[11px] text-gray-400 mt-1">
+                              {row.baselineDay15ActPct}%<DeltaBadge d={d15Delta} />
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -271,6 +461,11 @@ export default function PurchaseCohortsClient() {
   const [weeks, setWeeks] = useState<WeekRow[]>([]);
   const [options, setOptions] = useState<FilterOptions | null>(null);
   const [dropoff, setDropoff] = useState<DropoffAnalysis | null>(null);
+  const [segments, setSegments] = useState<SegmentGroup[]>([]);
+  const [snapshotDate, setSnapshotDate] = useState('');
+  const [segmentWeeks, setSegmentWeeks] = useState(4);
+  const [fromWeek, setFromWeek] = useState('');
+  const [toWeek, setToWeek] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -313,6 +508,8 @@ export default function PurchaseCohortsClient() {
       if (productName) params.set('product_name', productName);
       if (includeOptions) params.set('include_options', '1');
       params.set('include_dropoff', '1');
+      params.set('include_segments', '1');
+      params.set('segment_weeks', String(segmentWeeks));
 
       const res = await fetch(`/api/purchase-cohorts?${params}`);
       if (!res.ok) throw new Error('Failed');
@@ -320,12 +517,14 @@ export default function PurchaseCohortsClient() {
       setWeeks(data.weeks ?? []);
       if (data.options) setOptions(data.options);
       setDropoff(data.dropoff ?? null);
+      setSegments(data.segments ?? []);
+      if (data.snapshotDate) setSnapshotDate(data.snapshotDate);
     } catch {
       setError('Failed to load data');
     } finally {
       setLoading(false);
     }
-  }, [trafficSource, campaignType, payFreq, device, hasDiscount, priceBucket, productFunnel, isMC, isVSL, firstOrderOnly, orderType, placeInFunnel, productType, hasFunnelQuest, productName]);
+  }, [trafficSource, campaignType, payFreq, device, hasDiscount, priceBucket, productFunnel, isMC, isVSL, firstOrderOnly, orderType, placeInFunnel, productType, hasFunnelQuest, productName, segmentWeeks]);
 
   useEffect(() => { fetchData(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -333,21 +532,27 @@ export default function PurchaseCohortsClient() {
   useEffect(() => {
     if (isInitialMount[0]) { isInitialMount[1](false); return; }
     fetchData(false);
-  }, [trafficSource, campaignType, payFreq, device, hasDiscount, priceBucket, productFunnel, isMC, isVSL, firstOrderOnly, orderType, placeInFunnel, productType, hasFunnelQuest, productName]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [trafficSource, campaignType, payFreq, device, hasDiscount, priceBucket, productFunnel, isMC, isVSL, firstOrderOnly, orderType, placeInFunnel, productType, hasFunnelQuest, productName, segmentWeeks]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const resetFilters = () => {
     setTrafficSource(''); setCampaignType(''); setPayFreq('');
     setDevice(''); setHasDiscount(''); setPriceBucket(0);
     setProductFunnel(''); setIsMC(false); setIsVSL(false); setFirstOrderOnly(false);
     setOrderType(''); setPlaceInFunnel(''); setProductType(''); setHasFunnelQuest(''); setProductName('');
+    setFromWeek(''); setToWeek('');
   };
 
   const hasActiveFilters = trafficSource || campaignType || payFreq || device || hasDiscount || priceBucket > 0 || productFunnel || isMC || isVSL || firstOrderOnly || orderType || placeInFunnel || productType || hasFunnelQuest || productName;
-  const totalUsers = weeks.reduce((s, w) => s + w.total, 0);
+
+  // Client-side date range slice
+  const viewedWeeks = weeks.filter(w =>
+    (!fromWeek || w.week >= fromWeek) && (!toWeek || w.week <= toWeek)
+  );
+  const totalUsers = viewedWeeks.reduce((s, w) => s + w.total, 0);
 
   // Exclude only the current partial week (last entry) — it has < 7 days of data.
   // All other completed weeks are included, even if immature.
-  const completedWeeks = weeks.slice(0, -1);
+  const completedWeeks = viewedWeeks.slice(0, -1);
   const recent4 = completedWeeks.slice(-4);
   const prev4 = completedWeeks.slice(-8, -4);
   const weekAvg = (ws: WeekRow[], key: keyof WeekRow): number | null =>
@@ -425,11 +630,29 @@ export default function PurchaseCohortsClient() {
       <div className="bg-white border border-gray-200 rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold text-gray-900">Filters</h2>
-          {hasActiveFilters && (
+          {(hasActiveFilters || fromWeek || toWeek) && (
             <button onClick={resetFilters} className="text-xs text-violet-600 hover:text-violet-800 font-medium">Reset all</button>
           )}
         </div>
         <div className="flex flex-wrap gap-4">
+          {/* Date range */}
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">From week</label>
+            <select value={fromWeek} onChange={e => setFromWeek(e.target.value)}
+              className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-violet-400 min-w-[160px]">
+              <option value="">Earliest</option>
+              {weeks.map(w => <option key={w.week} value={w.week}>{w.weekLabel}</option>)}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">To week</label>
+            <select value={toWeek} onChange={e => setToWeek(e.target.value)}
+              className="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-violet-400 min-w-[160px]">
+              <option value="">Latest</option>
+              {weeks.map(w => <option key={w.week} value={w.week}>{w.weekLabel}</option>)}
+            </select>
+          </div>
+          <div className="self-end pb-0.5 h-9 w-px bg-gray-200" />
           {options && (
             <>
               <SelectFilter label="Traffic Source"  value={trafficSource}  options={options.trafficSources}    onChange={setTrafficSource} />
@@ -549,7 +772,7 @@ export default function PurchaseCohortsClient() {
               {isIP ? 'IP Team — Login Trend' : 'Engage Team — Activation Trend'}
             </h2>
             <p className="text-xs text-gray-500 mt-0.5">
-              {loading ? 'Loading…' : `${weeks.length} weeks · ${totalUsers.toLocaleString()} users`}
+              {loading ? 'Loading…' : `${viewedWeeks.length} weeks · ${totalUsers.toLocaleString()} users`}
               {hasActiveFilters && !loading && <span className="ml-2 text-violet-600 font-medium">· filtered</span>}
             </p>
           </div>
@@ -566,11 +789,45 @@ export default function PurchaseCohortsClient() {
               <span className="w-3 h-3 rounded-sm inline-block bg-violet-100" />
               Maturing
             </div>
+            <div className="flex items-center gap-1.5 text-xs text-gray-400">
+              <span className="w-3 h-3 rounded-sm inline-block bg-indigo-100" />
+              Cohort size
+            </div>
           </div>
         </div>
         <div className="px-5 py-4">
-          <TrendChart weeks={weeks} lines={lines} loading={loading} />
+          <TrendChart weeks={viewedWeeks} lines={lines} loading={loading} />
         </div>
+      </div>
+
+      {/* Segment comparison table */}
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <h2 className="font-semibold text-gray-900">
+              {isIP ? 'IP Team — Segment Breakdown' : 'Engage Team — Segment Breakdown'}
+            </h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Variables driving differences in {isIP ? 'login' : 'activation'}
+              {snapshotDate && (
+                <span className="ml-2 text-gray-400">· Data as of {new Date(snapshotDate + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}</span>
+              )}
+            </p>
+          </div>
+          <div className="flex items-center gap-1">
+            {([4, 8, 13, 26] as const).map(w => (
+              <button key={w} onClick={() => setSegmentWeeks(w)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${segmentWeeks === w ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-gray-500 border-gray-200 hover:border-violet-300'}`}>
+                {w}w
+              </button>
+            ))}
+          </div>
+        </div>
+        <SegmentComparisonTable
+          groups={segments}
+          primaryMetric={isIP ? 'day7' : 'day15'}
+          loading={loading}
+        />
       </div>
 
       {/* What's driving the decline? — Engage Team only */}
@@ -696,72 +953,6 @@ export default function PurchaseCohortsClient() {
         );
       })()}
 
-      {/* Table */}
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-100">
-          <h2 className="font-semibold text-gray-900">Weekly Breakdown</h2>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-50 text-xs text-gray-500 uppercase tracking-wide bg-gray-50">
-                <th className="text-left px-5 py-3 font-medium">Week</th>
-                <th className="text-right px-4 py-3 font-medium">{isIP ? 'Eligible' : 'Cohort'}</th>
-                {cards.map(c => (
-                  <th key={c.key} className="text-right px-4 py-3 font-medium" style={{ color: c.color }}>{c.label}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {loading ? (
-                Array.from({ length: 8 }).map((_, i) => (
-                  <tr key={i}>
-                    {Array.from({ length: 4 }).map((_, j) => (
-                      <td key={j} className="px-5 py-3">
-                        <div className="h-4 bg-gray-100 rounded animate-pulse" style={{ width: j === 0 ? '80px' : '50px' }} />
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              ) : weeks.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="px-5 py-10 text-center text-gray-400">No data for selected filters</td>
-                </tr>
-              ) : (
-                weeks.map(row => {
-                  const mature = isIP
-                    ? { day0LoginPct: true, day7LoginPct: row.isMature7 }
-                    : { day15ActPct: row.isMature15, day30ActPct: row.isMature30 };
-                  return (
-                    <tr key={row.week} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-5 py-3">
-                        <div className="font-medium text-gray-900">{row.weekLabel}</div>
-                        <div className="text-xs text-gray-400">{row.week}</div>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="text-gray-600">{(isIP ? row.loginEligible : row.total).toLocaleString()}</div>
-                        {isIP && <div className="text-xs text-gray-400">{row.total.toLocaleString()} total</div>}
-                      </td>
-                      {cards.map(c => {
-                        const val = row[c.key] as number;
-                        const m = mature[c.key as keyof typeof mature] ?? true;
-                        return (
-                          <td key={c.key} className="px-4 py-3 text-right">
-                            <div className={`${pctColor(val, c.lo, c.hi)} ${!m ? 'opacity-50' : ''}`}>
-                              {val}%{!m && <span className="ml-1 text-gray-400 font-normal text-xs">~</span>}
-                            </div>
-                            <Bar pct={val} color={c.color} mature={m} />
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
     </div>
   );
 }

@@ -10,6 +10,7 @@
     "pipeline": "tsx scripts/pipeline.ts"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "better-sqlite3": "^12.8.0",
     "next": "16.2.3",
     "react": "19.2.4",
