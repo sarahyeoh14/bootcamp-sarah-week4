@@ -15,10 +15,10 @@ import path from 'path';
 import fs from 'fs';
 import { getDb } from './db';
 
-const DATA_PATH = path.join(process.cwd(), 'data', 'l52weeks_product_metric_v5.json');
+const DATA_PATH = path.join(process.cwd(), 'data', 'l52weeks_product_metric_v6.json');
 
 // Schema version — bump whenever the table structure changes so the DB is rebuilt.
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 // ---------------------------------------------------------------------------
 // Schema
