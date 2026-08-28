@@ -671,6 +671,37 @@ export interface PriceBandData {
   ghostRate: number;
 }
 
+export interface Day0ProductRow {
+  productName: string;
+  beforeShare: number;   // % of before-window eligible
+  afterShare: number;    // % of after-window eligible
+  beforeDay0: number;    // Day 0 % in before window
+  afterDay0: number;     // Day 0 % in after window
+  beforeElig: number;
+  afterElig: number;
+}
+
+export interface Day0DeviceRow {
+  device: string;
+  beforeElig: number;
+  afterElig: number;
+  beforeDay0: number;
+  afterDay0: number;
+}
+
+export interface Day0Decline {
+  cutoff: string;        // e.g. '2026-06-29'
+  beforeRate: number;    // overall Day 0 % before cutoff
+  afterRate: number;     // overall Day 0 % after cutoff
+  delta: number;         // afterRate - beforeRate (negative = decline)
+  beforeElig: number;
+  afterElig: number;
+  mixShiftImpact: number;   // pp impact from product mix change alone
+  rateChangeImpact: number; // pp impact from within-product rate changes alone
+  byProduct: Day0ProductRow[];
+  byDevice: Day0DeviceRow[];
+}
+
 export interface LoginAnalysis {
   weekRange: { min: string; max: string };
   overall: { total: number; day7Rate: number; prevDay7Rate: number | null; prevTotal: number };
@@ -683,6 +714,7 @@ export interface LoginAnalysis {
   deviceBreakdown: DeviceLoginData[];
   priceBreakdown: PriceBandData[];
   lateLoggerTiming: Array<{ bucket: string; count: number }>;
+  day0Decline: Day0Decline | null;
 }
 
 export function getLoginAnalysis(filters: PurchaseFilters = {}): LoginAnalysis | null {
@@ -857,6 +889,123 @@ export function getLoginAnalysis(filters: PurchaseFilters = {}): LoginAnalysis |
     };
   });
 
+  // ---------------------------------------------------------------------------
+  // Day 0 decline analysis — before vs after June 29 cutoff
+  // ---------------------------------------------------------------------------
+  const D0_CUTOFF = '2026-06-29';
+  // Before window: 13 weeks immediately prior to cutoff (Mar 30 – Jun 22)
+  const d0BeforeMax = (() => { const d = new Date(D0_CUTOFF + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - 7); return d.toISOString().substring(0, 10); })();
+  const d0BeforeMin = (() => { const d = new Date(D0_CUTOFF + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - 7 * 14); return d.toISOString().substring(0, 10); })();
+  // After window: cutoff through most-recent complete week
+  const d0AfterMin = D0_CUTOFF;
+  const d0AfterMax = completedCutoffStr;
+
+  let day0Decline: Day0Decline | null = null;
+  try {
+    const eligExtra = `order_type IN ('New','Trial') AND is_first_order = 1`;
+
+    function d0Query(wMin: string, wMax: string, extraAnd = '') {
+      const clause = where
+        ? `${where} AND purchase_week BETWEEN ? AND ? AND ${eligExtra}${extraAnd ? ' AND ' + extraAnd : ''}`
+        : `WHERE purchase_week BETWEEN ? AND ? AND ${eligExtra}${extraAnd ? ' AND ' + extraAnd : ''}`;
+      return db.prepare(`
+        SELECT COUNT(DISTINCT user_id) as elig,
+          COUNT(DISTINCT CASE WHEN days_to_login IS NOT NULL AND days_to_login = 0 THEN user_id END) as day0
+        FROM purchase_cohorts ${clause}
+      `).get(...params, wMin, wMax) as { elig: number; day0: number };
+    }
+
+    const beforeAll = d0Query(d0BeforeMin, d0BeforeMax);
+    const afterAll  = d0Query(d0AfterMin,  d0AfterMax);
+
+    if (beforeAll.elig > 0 && afterAll.elig > 0) {
+      const beforeRate = Math.round(beforeAll.day0 / beforeAll.elig * 1000) / 10;
+      const afterRate  = Math.round(afterAll.day0  / afterAll.elig  * 1000) / 10;
+
+      // Product breakdown
+      const allProds = (db.prepare(`
+        SELECT product_name as prod,
+          SUM(CASE WHEN purchase_week BETWEEN ? AND ? THEN 1 ELSE 0 END) as b_cnt,
+          SUM(CASE WHEN purchase_week BETWEEN ? AND ? THEN 1 ELSE 0 END) as a_cnt
+        FROM purchase_cohorts
+        ${where ? where + ' AND' : 'WHERE'} product_name IS NOT NULL AND ${eligExtra}
+        GROUP BY prod
+        HAVING b_cnt + a_cnt > 0
+        ORDER BY b_cnt + a_cnt DESC LIMIT 10
+      `).all(d0BeforeMin, d0BeforeMax, d0AfterMin, d0AfterMax, ...params) as { prod: string; b_cnt: number; a_cnt: number }[]);
+
+      const byProduct: Day0ProductRow[] = [];
+      for (const row of allProds) {
+        const safeP = row.prod.replace(/'/g, "''");
+        const b = d0Query(d0BeforeMin, d0BeforeMax, `product_name = '${safeP}'`);
+        const a = d0Query(d0AfterMin,  d0AfterMax,  `product_name = '${safeP}'`);
+        if (b.elig + a.elig < 30) continue;
+        byProduct.push({
+          productName: row.prod,
+          beforeElig: b.elig,
+          afterElig: a.elig,
+          beforeShare: beforeAll.elig > 0 ? Math.round(b.elig / beforeAll.elig * 1000) / 10 : 0,
+          afterShare:  afterAll.elig  > 0 ? Math.round(a.elig / afterAll.elig  * 1000) / 10 : 0,
+          beforeDay0: b.elig > 0 ? Math.round(b.day0 / b.elig * 1000) / 10 : 0,
+          afterDay0:  a.elig > 0 ? Math.round(a.day0 / a.elig * 1000) / 10 : 0,
+        });
+      }
+
+      // Device breakdown
+      const deviceList = ['mobile', 'desktop', 'tablet'] as const;
+      const byDevice: Day0DeviceRow[] = [];
+      for (const dev of deviceList) {
+        const b = d0Query(d0BeforeMin, d0BeforeMax, `device_category = '${dev}'`);
+        const a = d0Query(d0AfterMin,  d0AfterMax,  `device_category = '${dev}'`);
+        if (b.elig + a.elig < 50) continue;
+        byDevice.push({
+          device: dev,
+          beforeElig: b.elig, afterElig: a.elig,
+          beforeDay0: b.elig > 0 ? Math.round(b.day0 / b.elig * 1000) / 10 : 0,
+          afterDay0:  a.elig > 0 ? Math.round(a.day0 / a.elig * 1000) / 10 : 0,
+        });
+      }
+      // In-app (null device)
+      const bIA = d0Query(d0BeforeMin, d0BeforeMax, 'device_category IS NULL');
+      const aIA = d0Query(d0AfterMin,  d0AfterMax,  'device_category IS NULL');
+      if (bIA.elig + aIA.elig >= 50) {
+        byDevice.push({
+          device: 'in-app',
+          beforeElig: bIA.elig, afterElig: aIA.elig,
+          beforeDay0: bIA.elig > 0 ? Math.round(bIA.day0 / bIA.elig * 1000) / 10 : 0,
+          afterDay0:  aIA.elig > 0 ? Math.round(aIA.day0 / aIA.elig * 1000) / 10 : 0,
+        });
+      }
+
+      // Counterfactual decomposition
+      // Mix shift impact: apply after-window shares to before-window rates → compare to before overall
+      // Rate change impact: apply after-window rates to before-window shares → compare to before overall
+      let mixShiftImpact = 0;
+      let rateChangeImpact = 0;
+      if (byProduct.length > 0) {
+        // counterfactual 1: after shares, before rates
+        const cf1 = byProduct.reduce((s, p) => s + (p.afterShare / 100) * p.beforeDay0, 0);
+        mixShiftImpact = Math.round((cf1 - beforeRate) * 10) / 10;
+        // counterfactual 2: before shares, after rates
+        const cf2 = byProduct.reduce((s, p) => s + (p.beforeShare / 100) * p.afterDay0, 0);
+        rateChangeImpact = Math.round((cf2 - beforeRate) * 10) / 10;
+      }
+
+      day0Decline = {
+        cutoff: D0_CUTOFF,
+        beforeRate,
+        afterRate,
+        delta: Math.round((afterRate - beforeRate) * 10) / 10,
+        beforeElig: beforeAll.elig,
+        afterElig: afterAll.elig,
+        mixShiftImpact,
+        rateChangeImpact,
+        byProduct,
+        byDevice,
+      };
+    }
+  } catch (_) { /* non-critical — skip if no data */ }
+
   return {
     weekRange: { min: minWeek, max: maxWeek },
     overall: { total: cur.total, day7Rate: cur.day7Rate, prevDay7Rate: prv.total > 0 ? prv.day7Rate : null, prevTotal: prv.total },
@@ -869,6 +1018,7 @@ export function getLoginAnalysis(filters: PurchaseFilters = {}): LoginAnalysis |
     deviceBreakdown,
     priceBreakdown,
     lateLoggerTiming,
+    day0Decline,
   };
 }
 

@@ -106,6 +106,37 @@ interface PriceBandData {
   ghostRate: number;
 }
 
+interface Day0ProductRow {
+  productName: string;
+  beforeShare: number;
+  afterShare: number;
+  beforeDay0: number;
+  afterDay0: number;
+  beforeElig: number;
+  afterElig: number;
+}
+
+interface Day0DeviceRow {
+  device: string;
+  beforeElig: number;
+  afterElig: number;
+  beforeDay0: number;
+  afterDay0: number;
+}
+
+interface Day0Decline {
+  cutoff: string;
+  beforeRate: number;
+  afterRate: number;
+  delta: number;
+  beforeElig: number;
+  afterElig: number;
+  mixShiftImpact: number;
+  rateChangeImpact: number;
+  byProduct: Day0ProductRow[];
+  byDevice: Day0DeviceRow[];
+}
+
 interface LoginAnalysis {
   weekRange: { min: string; max: string };
   overall: { total: number; day7Rate: number; prevDay7Rate: number | null; prevTotal: number };
@@ -118,6 +149,7 @@ interface LoginAnalysis {
   deviceBreakdown: DeviceLoginData[];
   priceBreakdown: PriceBandData[];
   lateLoggerTiming: Array<{ bucket: string; count: number }>;
+  day0Decline: Day0Decline | null;
 }
 
 type Tab = 'ip' | 'engage';
@@ -1131,6 +1163,185 @@ export default function PurchaseCohortsClient() {
                 </div>
                 <p className="text-[10px] text-gray-400 mt-2">Ghost % = eligible buyers in mature cohorts who never logged in · snapshot {new Date(loginAnalysis.weekRange.max + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}</p>
               </div>
+
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Day 0 login decline — IP Team only */}
+      {isIP && loginAnalysis?.day0Decline && !loading && (() => {
+        const d = loginAnalysis.day0Decline!;
+        const isDecline = d.delta < 0;
+        const topMover = [...d.byProduct].sort((a, b) =>
+          Math.abs((b.afterShare - b.beforeShare) * (b.afterDay0 - b.beforeDay0)) -
+          Math.abs((a.afterShare - a.beforeShare) * (a.afterDay0 - a.beforeDay0))
+        )[0];
+        const desktopRow = d.byDevice.find(r => r.device === 'desktop');
+
+        return (
+          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100">
+              <h2 className="font-semibold text-gray-900">Day 0 login rate: before vs after June 29</h2>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Counterfactual decomposition · mature cohorts · {d.beforeElig.toLocaleString()} buyers before · {d.afterElig.toLocaleString()} buyers after
+              </p>
+            </div>
+            <div className="p-5 space-y-4">
+
+              {/* Headline stat */}
+              <div className="flex items-stretch gap-3">
+                <div className="flex-1 bg-gray-50 border border-gray-100 rounded-xl p-4 text-center">
+                  <p className="text-[10px] text-gray-400 font-medium mb-1">Before Jun 29</p>
+                  <p className="text-2xl font-bold text-gray-800">{d.beforeRate}%</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Day 0 login</p>
+                </div>
+                <div className="flex items-center px-1">
+                  <span className={`text-lg font-bold ${isDecline ? 'text-red-500' : 'text-emerald-600'}`}>
+                    {isDecline ? '▼' : '▲'} {Math.abs(d.delta)}pp
+                  </span>
+                </div>
+                <div className="flex-1 bg-gray-50 border border-gray-100 rounded-xl p-4 text-center">
+                  <p className="text-[10px] text-gray-400 font-medium mb-1">After Jun 29</p>
+                  <p className={`text-2xl font-bold ${isDecline ? 'text-red-600' : 'text-emerald-600'}`}>{d.afterRate}%</p>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Day 0 login</p>
+                </div>
+              </div>
+
+              {/* Decomposition */}
+              {d.byProduct.length > 0 && (
+                <div className="bg-violet-50 border border-violet-100 rounded-xl p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-bold text-violet-700 bg-violet-100 px-2 py-0.5 rounded-full">Root cause</span>
+                    <span className="text-sm font-semibold text-gray-800">
+                      {d.mixShiftImpact >= 0
+                        ? `Product mix shift helped +${d.mixShiftImpact}pp — rate drops within products drove the ${Math.abs(d.delta)}pp decline`
+                        : `Mix shift hurt ${d.mixShiftImpact}pp · rate changes added ${d.rateChangeImpact}pp`}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mb-3">
+                    <div className="bg-white border border-violet-100 rounded-lg p-3 text-center">
+                      <p className="text-[10px] text-gray-400 font-medium">Mix shift impact</p>
+                      <p className={`text-base font-bold mt-0.5 ${d.mixShiftImpact >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                        {d.mixShiftImpact >= 0 ? '+' : ''}{d.mixShiftImpact}pp
+                      </p>
+                      <p className="text-[10px] text-gray-400">if rates stayed same</p>
+                    </div>
+                    <div className="bg-white border border-violet-100 rounded-lg p-3 text-center">
+                      <p className="text-[10px] text-gray-400 font-medium">Rate change impact</p>
+                      <p className={`text-base font-bold mt-0.5 ${d.rateChangeImpact >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                        {d.rateChangeImpact >= 0 ? '+' : ''}{d.rateChangeImpact}pp
+                      </p>
+                      <p className="text-[10px] text-gray-400">if mix stayed same</p>
+                    </div>
+                  </div>
+                  {topMover && (
+                    <p className="text-xs text-gray-600">
+                      <strong>{topMover.productName}</strong> drove the biggest swing: share went {topMover.beforeShare}% → {topMover.afterShare}% while its own Day 0 rate {topMover.afterDay0 < topMover.beforeDay0 ? 'fell' : 'rose'} {topMover.beforeDay0}% → {topMover.afterDay0}%
+                      {topMover.afterDay0 < topMover.beforeDay0 ? ` (−${Math.round((topMover.beforeDay0 - topMover.afterDay0) * 10) / 10}pp)` : ` (+${Math.round((topMover.afterDay0 - topMover.beforeDay0) * 10) / 10}pp)`}.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Product table */}
+              {d.byProduct.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-700 mb-2">Day 0 rate by product — before vs after June 29</p>
+                  <div className="overflow-x-auto -mx-1">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-gray-400 border-b border-gray-100">
+                          <th className="text-left pb-2 pl-1 font-medium">Product</th>
+                          <th className="text-right pb-2 font-medium">Share before</th>
+                          <th className="text-right pb-2 font-medium">Share after</th>
+                          <th className="text-right pb-2 font-medium">Day 0 before</th>
+                          <th className="text-right pb-2 pr-1 font-medium">Day 0 after</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {d.byProduct.map(p => {
+                          const rateDir = p.afterDay0 - p.beforeDay0;
+                          const shareDir = p.afterShare - p.beforeShare;
+                          const rateColor = rateDir < -2 ? '#dc2626' : rateDir > 2 ? '#059669' : '#6b7280';
+                          return (
+                            <tr key={p.productName} className="border-b border-gray-50 last:border-0">
+                              <td className="py-1.5 pl-1 font-medium text-gray-700" style={{ maxWidth: 170 }}>
+                                <div className="truncate" title={p.productName}>{p.productName}</div>
+                              </td>
+                              <td className="py-1.5 text-right text-gray-500">{p.beforeShare}%</td>
+                              <td className="py-1.5 text-right">
+                                <span className={`font-medium ${shareDir > 5 ? 'text-violet-700' : shareDir < -5 ? 'text-gray-400' : 'text-gray-600'}`}>
+                                  {p.afterShare}%
+                                </span>
+                                {Math.abs(shareDir) >= 3 && (
+                                  <span className={`ml-1 text-[10px] ${shareDir > 0 ? 'text-violet-600' : 'text-gray-400'}`}>
+                                    ({shareDir > 0 ? '+' : ''}{Math.round(shareDir * 10) / 10}pp)
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-1.5 text-right text-gray-500">{p.beforeDay0}%</td>
+                              <td className="py-1.5 text-right pr-1 font-semibold" style={{ color: rateColor }}>
+                                {p.afterDay0}%
+                                {Math.abs(rateDir) >= 1 && (
+                                  <span className="ml-1 font-normal text-[10px]">
+                                    ({rateDir > 0 ? '+' : ''}{Math.round(rateDir * 10) / 10}pp)
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* Device table */}
+              {d.byDevice.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-700 mb-2">Day 0 rate by channel — before vs after June 29</p>
+                  <div className="overflow-x-auto -mx-1">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-gray-400 border-b border-gray-100">
+                          <th className="text-left pb-2 pl-1 font-medium">Channel</th>
+                          <th className="text-right pb-2 font-medium">Buyers before</th>
+                          <th className="text-right pb-2 font-medium">Buyers after</th>
+                          <th className="text-right pb-2 font-medium">Day 0 before</th>
+                          <th className="text-right pb-2 pr-1 font-medium">Day 0 after</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {d.byDevice.map(r => {
+                          const dir = r.afterDay0 - r.beforeDay0;
+                          const color = dir < -2 ? '#dc2626' : dir > 2 ? '#059669' : '#6b7280';
+                          return (
+                            <tr key={r.device} className="border-b border-gray-50 last:border-0">
+                              <td className="py-1.5 pl-1 font-medium text-gray-700 capitalize">{r.device}</td>
+                              <td className="py-1.5 text-right text-gray-400">{r.beforeElig.toLocaleString()}</td>
+                              <td className="py-1.5 text-right text-gray-400">{r.afterElig.toLocaleString()}</td>
+                              <td className="py-1.5 text-right text-gray-500">{r.beforeDay0}%</td>
+                              <td className="py-1.5 text-right pr-1 font-semibold" style={{ color }}>
+                                {r.afterDay0}%
+                                {Math.abs(dir) >= 1 && (
+                                  <span className="ml-1 font-normal text-[10px]">
+                                    ({dir > 0 ? '+' : ''}{Math.round(dir * 10) / 10}pp)
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {desktopRow && desktopRow.afterDay0 < desktopRow.beforeDay0 && (
+                      <p className="text-[10px] text-gray-400 mt-2">Desktop declined {Math.round((desktopRow.beforeDay0 - desktopRow.afterDay0) * 10) / 10}pp — worth investigating whether a checkout/redirect change affected browser buyers specifically.</p>
+                    )}
+                  </div>
+                </div>
+              )}
 
             </div>
           </div>
