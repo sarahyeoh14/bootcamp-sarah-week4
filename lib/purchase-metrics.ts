@@ -801,7 +801,7 @@ export function getLoginAnalysis(filters: PurchaseFilters = {}): LoginAnalysis |
       ghostRate: r.eligible > 0 ? Math.round(r.ghost / r.eligible * 1000) / 10 : 0,
     }));
 
-  // Price band breakdown (mature cohorts)
+  // Price band breakdown (mature cohorts, Yearly subscribers only — monthly mix is too small)
   const priceBandSql = `
     SELECT
       CASE
@@ -816,7 +816,7 @@ export function getLoginAnalysis(filters: PurchaseFilters = {}): LoginAnalysis |
       COUNT(DISTINCT CASE WHEN days_to_login IS NOT NULL AND days_to_login <= 7 THEN user_id END) as day7,
       COUNT(DISTINCT CASE WHEN days_to_login IS NOT NULL AND days_to_login > 7 THEN user_id END) as late,
       COUNT(DISTINCT CASE WHEN days_to_login IS NULL THEN user_id END) as ghost
-    FROM purchase_cohorts ${eligBase} AND order_amount IS NOT NULL
+    FROM purchase_cohorts ${eligBase} AND order_amount IS NOT NULL AND payment_frequency = 'Yearly'
     GROUP BY label ORDER BY MIN(order_amount)
   `;
   const priceRows = (db.prepare(priceBandSql).all(...eligP) as {
