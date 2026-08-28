@@ -50,11 +50,14 @@ interface SegmentRow {
   label: string;
   total: number;
   loginEligible: number;
+  day0LoginPct: number | null;
   day7LoginPct: number | null;
   day15ActPct: number | null;
   baselineTotal: number;
+  baselineDay0LoginPct: number | null;
   baselineDay7LoginPct: number | null;
   baselineDay15ActPct: number | null;
+  firstWeek?: string;
 }
 
 interface SegmentGroup {
@@ -75,6 +78,26 @@ interface DropoffAnalysis {
   problemSegment: SegmentRate;
   bestSegment: SegmentRate;
   topProductShifts: ProductShift[];
+}
+
+interface ProductLoginData {
+  productName: string;
+  recentTotal: number;
+  recentShare: number;
+  day7Rate: number;
+  prevDay7Rate: number | null;
+  ghostCount: number;
+  ghostRate: number;
+}
+
+interface LoginAnalysis {
+  weekRange: { min: string; max: string };
+  overall: { total: number; day7Rate: number; prevDay7Rate: number | null; prevTotal: number };
+  monthlyCustomers: { total: number; day7Rate: number; prevDay7Rate: number | null };
+  yearlyCustomers:  { total: number; day7Rate: number; prevDay7Rate: number | null };
+  topProducts: ProductLoginData[];
+  ghostTotalMature: number;
+  eligibleTotalMature: number;
 }
 
 type Tab = 'ip' | 'engage';
@@ -326,13 +349,28 @@ function rateColor(pct: number, lo: number, hi: number) {
   return { text: 'text-red-600 font-semibold', bg: 'bg-red-50' };
 }
 
+type SegmentMetricKey = 'day0LoginPct' | 'day7LoginPct' | 'day15ActPct';
+type SegmentBaselineKey = 'baselineDay0LoginPct' | 'baselineDay7LoginPct' | 'baselineDay15ActPct';
+
+const SEGMENT_COL_CONFIG: Record<SegmentMetricKey, {
+  label: string;
+  baselineKey: SegmentBaselineKey;
+  color: string;
+  lo: number;
+  hi: number;
+}> = {
+  day0LoginPct:  { label: 'Day 0 Login %',       baselineKey: 'baselineDay0LoginPct',  color: 'text-violet-600', lo: 50, hi: 70 },
+  day7LoginPct:  { label: 'Day 7 Login %',        baselineKey: 'baselineDay7LoginPct',  color: 'text-cyan-600',   lo: 60, hi: 80 },
+  day15ActPct:   { label: 'Day 15 Activation %',  baselineKey: 'baselineDay15ActPct',   color: 'text-emerald-600', lo: 30, hi: 50 },
+};
+
 function SegmentComparisonTable({
   groups,
-  primaryMetric,
+  cols,
   loading,
 }: {
   groups: SegmentGroup[];
-  primaryMetric: 'day7' | 'day15';
+  cols: [SegmentMetricKey, SegmentMetricKey];
   loading: boolean;
 }) {
   if (loading) {
@@ -343,6 +381,10 @@ function SegmentComparisonTable({
     );
   }
   if (groups.length === 0) return null;
+
+  const [colA, colB] = cols;
+  const cfgA = SEGMENT_COL_CONFIG[colA];
+  const cfgB = SEGMENT_COL_CONFIG[colB];
 
   function delta(recent: number | null, baseline: number | null): number | null {
     if (recent === null || baseline === null) return null;
@@ -360,6 +402,26 @@ function SegmentComparisonTable({
     );
   }
 
+  function MetricCell({ val, baseline, lo, hi, isNew, isPrimary }: {
+    val: number | null; baseline: number | null; lo: number; hi: number; isNew: boolean; isPrimary: boolean;
+  }) {
+    const colors = val !== null && !isNew ? rateColor(val, lo, hi) : null;
+    const d = delta(val, baseline);
+    if (val === null) return <span className="text-gray-300">—</span>;
+    return (
+      <>
+        <span className={`inline-block px-2 py-0.5 rounded-md text-xs ${colors ? colors.text : 'text-gray-500'} ${isPrimary && colors ? colors.bg : ''}`}>
+          {val}%
+        </span>
+        {baseline !== null && (
+          <div className="text-[11px] text-gray-400 mt-1">
+            {baseline}%<DeltaBadge d={d} />
+          </div>
+        )}
+      </>
+    );
+  }
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
@@ -367,13 +429,12 @@ function SegmentComparisonTable({
           <tr className="text-xs text-gray-400 uppercase tracking-wide border-b border-gray-100">
             <th className="text-left px-5 py-3 font-medium">Segment</th>
             <th className="text-right px-4 py-3 font-medium">Users</th>
-            <th className={`text-right px-4 py-3 font-medium ${primaryMetric === 'day7' ? 'text-cyan-600' : 'text-gray-400'}`}>
-              <div>Day 7 Login %</div>
+            <th className={`text-right px-4 py-3 font-medium ${cfgA.color}`}>
+              <div>{cfgA.label}</div>
               <div className="text-[10px] normal-case tracking-normal text-gray-400 font-normal mt-0.5">recent · 12w avg</div>
             </th>
-            <th className="text-right px-4 py-3 font-medium text-gray-400">Gap</th>
-            <th className={`text-right px-4 py-3 font-medium ${primaryMetric === 'day15' ? 'text-emerald-600' : 'text-gray-400'}`}>
-              <div>Day 15 Act %</div>
+            <th className={`text-right px-4 py-3 font-medium ${cfgB.color}`}>
+              <div>{cfgB.label}</div>
               <div className="text-[10px] normal-case tracking-normal text-gray-400 font-normal mt-0.5">recent · 12w avg</div>
             </th>
           </tr>
@@ -382,68 +443,82 @@ function SegmentComparisonTable({
           {groups.map((group, gi) => (
             <Fragment key={gi}>
               <tr className="bg-gray-50 border-t border-gray-100">
-                <td colSpan={5} className="px-5 py-2">
+                <td colSpan={4} className="px-5 py-2">
                   <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">{group.dimension}</span>
                 </td>
               </tr>
-              {group.rows.map((row) => {
-                const d7Colors = row.day7LoginPct !== null ? rateColor(row.day7LoginPct, 60, 80) : null;
-                const d15Colors = row.day15ActPct !== null ? rateColor(row.day15ActPct, 30, 50) : null;
-                const gap = row.day7LoginPct !== null && row.day15ActPct !== null
-                  ? Math.round((row.day7LoginPct - row.day15ActPct) * 10) / 10
+              {(() => {
+                const groupRecentTotal = group.rows.reduce((s, r) => s + r.total, 0);
+                const groupBaselineTotal = group.rows.reduce((s, r) => s + r.baselineTotal, 0);
+                return group.rows.map((row) => {
+                const SNAPSHOT = '2026-08-26';
+                const snapshotMs = new Date(SNAPSHOT).getTime();
+                const isNew = row.firstWeek
+                  ? (snapshotMs - new Date(row.firstWeek).getTime()) / (1000 * 60 * 60 * 24 * 7) < 13
+                  : false;
+                const recentShare = groupRecentTotal > 0
+                  ? Math.round(row.total / groupRecentTotal * 1000) / 10
                   : null;
-                const d7Delta = delta(row.day7LoginPct, row.baselineDay7LoginPct);
-                const d15Delta = delta(row.day15ActPct, row.baselineDay15ActPct);
+                const baselineShare = groupBaselineTotal > 0
+                  ? Math.round(row.baselineTotal / groupBaselineTotal * 1000) / 10
+                  : null;
+                const shareShift = recentShare !== null && baselineShare !== null
+                  ? Math.round((recentShare - baselineShare) * 10) / 10
+                  : null;
+                const avgB = group.rows.filter(r => r[colB] !== null).reduce((s, r, _, a) => s + ((r[colB] as number) ?? 0) / a.length, 0);
+                const isDragging = !isNew && shareShift !== null && shareShift > 1 &&
+                  row[colB] !== null && (row[colB] as number) < avgB;
+
                 return (
                   <tr key={`${gi}-${row.label}`} className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
-                    <td className="px-5 py-3 font-medium text-gray-800">{row.label}</td>
+                    <td className="px-5 py-3 font-medium text-gray-800">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {row.label}
+                        {isNew && (
+                          <span className="text-[10px] font-semibold text-sky-600 bg-sky-50 border border-sky-100 px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                            new
+                          </span>
+                        )}
+                        {isDragging && (
+                          <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 border border-amber-100 px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                            mix shift ↑
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-right text-gray-500 tabular-nums align-top pt-3.5">
                       {row.total.toLocaleString()}
-                    </td>
-                    <td className={`px-4 py-3 text-right tabular-nums ${primaryMetric === 'day7' ? '' : 'opacity-70'}`}>
-                      {row.day7LoginPct !== null && d7Colors ? (
-                        <>
-                          <span className={`inline-block px-2 py-0.5 rounded-md text-xs ${d7Colors.text} ${primaryMetric === 'day7' ? d7Colors.bg : ''}`}>
-                            {row.day7LoginPct}%
-                          </span>
-                          {row.baselineDay7LoginPct !== null && (
-                            <div className="text-[11px] text-gray-400 mt-1">
-                              {row.baselineDay7LoginPct}%<DeltaBadge d={d7Delta} />
-                            </div>
+                      {recentShare !== null && (
+                        <div className="text-[10px] mt-0.5">
+                          <span className="text-gray-400">{recentShare}%</span>
+                          {shareShift !== null && shareShift !== 0 && (
+                            <span className={`ml-1 font-semibold ${shareShift > 0 ? 'text-amber-500' : 'text-sky-500'}`}>
+                              {shareShift > 0 ? '+' : ''}{shareShift}pp
+                            </span>
                           )}
-                        </>
-                      ) : (
-                        <span className="text-gray-300">—</span>
+                        </div>
                       )}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums align-top pt-3.5">
-                      {gap !== null ? (
-                        <span className={`text-xs font-medium ${gap > 15 ? 'text-red-500' : gap >= 10 ? 'text-amber-500' : 'text-gray-400'}`}>
-                          -{gap}pp
-                        </span>
-                      ) : (
-                        <span className="text-gray-300">—</span>
-                      )}
+                      <MetricCell
+                        val={row[colA] as number | null}
+                        baseline={row[cfgA.baselineKey] as number | null}
+                        lo={cfgA.lo} hi={cfgA.hi}
+                        isNew={isNew} isPrimary={false}
+                      />
                     </td>
-                    <td className={`px-4 py-3 text-right tabular-nums ${primaryMetric === 'day15' ? '' : 'opacity-70'}`}>
-                      {row.day15ActPct !== null && d15Colors ? (
-                        <>
-                          <span className={`inline-block px-2 py-0.5 rounded-md text-xs ${d15Colors.text} ${primaryMetric === 'day15' ? d15Colors.bg : ''}`}>
-                            {row.day15ActPct}%
-                          </span>
-                          {row.baselineDay15ActPct !== null && (
-                            <div className="text-[11px] text-gray-400 mt-1">
-                              {row.baselineDay15ActPct}%<DeltaBadge d={d15Delta} />
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <span className="text-gray-300">—</span>
-                      )}
+                    <td className="px-4 py-3 text-right tabular-nums align-top pt-3.5">
+                      <MetricCell
+                        val={row[colB] as number | null}
+                        baseline={row[cfgB.baselineKey] as number | null}
+                        lo={cfgB.lo} hi={cfgB.hi}
+                        isNew={isNew} isPrimary={true}
+                      />
                     </td>
                   </tr>
                 );
-              })}
+              });
+              })()}
             </Fragment>
           ))}
         </tbody>
@@ -461,6 +536,7 @@ export default function PurchaseCohortsClient() {
   const [weeks, setWeeks] = useState<WeekRow[]>([]);
   const [options, setOptions] = useState<FilterOptions | null>(null);
   const [dropoff, setDropoff] = useState<DropoffAnalysis | null>(null);
+  const [loginAnalysis, setLoginAnalysis] = useState<LoginAnalysis | null>(null);
   const [segments, setSegments] = useState<SegmentGroup[]>([]);
   const [snapshotDate, setSnapshotDate] = useState('');
   const [segmentWeeks, setSegmentWeeks] = useState(4);
@@ -517,6 +593,7 @@ export default function PurchaseCohortsClient() {
       setWeeks(data.weeks ?? []);
       if (data.options) setOptions(data.options);
       setDropoff(data.dropoff ?? null);
+      setLoginAnalysis(data.loginAnalysis ?? null);
       setSegments(data.segments ?? []);
       if (data.snapshotDate) setSnapshotDate(data.snapshotDate);
     } catch {
@@ -825,10 +902,122 @@ export default function PurchaseCohortsClient() {
         </div>
         <SegmentComparisonTable
           groups={segments}
-          primaryMetric={isIP ? 'day7' : 'day15'}
+          cols={isIP ? ['day0LoginPct', 'day7LoginPct'] : ['day7LoginPct', 'day15ActPct']}
           loading={loading}
         />
       </div>
+
+      {/* Who's not logging in? — IP Team only */}
+      {isIP && loginAnalysis && !loading && (() => {
+        const questGhosts = loginAnalysis.topProducts
+          .filter(p => p.productName.toLowerCase().includes('quest'))
+          .reduce((s, p) => s + p.ghostCount, 0);
+        const questGhostPct = loginAnalysis.ghostTotalMature > 0
+          ? Math.round(questGhosts / loginAnalysis.ghostTotalMature * 100) : 0;
+        const yearlyMonthlyGap = Math.round(Math.abs(
+          loginAnalysis.yearlyCustomers.day7Rate - loginAnalysis.monthlyCustomers.day7Rate
+        ) * 10) / 10;
+        const ghostRate = loginAnalysis.eligibleTotalMature > 0
+          ? Math.round(loginAnalysis.ghostTotalMature / loginAnalysis.eligibleTotalMature * 1000) / 10 : 0;
+        const overallDelta = loginAnalysis.overall.prevDay7Rate !== null
+          ? Math.round((loginAnalysis.overall.day7Rate - loginAnalysis.overall.prevDay7Rate) * 10) / 10 : null;
+
+        return (
+          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-gray-100">
+              <h2 className="font-semibold text-gray-900">Who&apos;s not logging in?</h2>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Ghost buyer analysis · mature cohorts (14d+) · {loginAnalysis.eligibleTotalMature.toLocaleString()} eligible users
+                {overallDelta !== null && (
+                  <span className={`ml-2 font-semibold ${overallDelta >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                    · Day 7 {overallDelta >= 0 ? '+' : ''}{overallDelta}pp recent vs prev 4w
+                  </span>
+                )}
+              </p>
+            </div>
+            <div className="p-5 space-y-4">
+
+              {/* Finding 1 — Quest products */}
+              <div className="border border-amber-100 bg-amber-50 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">Finding 1</span>
+                  <span className="text-sm font-semibold text-gray-800 flex-1">Quest products drive {questGhostPct}% of ghost buyers</span>
+                  <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">{questGhosts.toLocaleString()} users</span>
+                </div>
+                <p className="text-xs text-gray-600 mb-3">
+                  Quest All Access and Quest Only account for {questGhostPct}% of all buyers who never logged in. These broad-catalogue products attract discovery buyers with no specific content goal — unlike Pathway products where the topic itself creates urgency to start.
+                </p>
+                <div className="overflow-x-auto -mx-1">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-gray-400 border-b border-amber-100">
+                        <th className="text-left pb-2 pl-1 font-medium">Product</th>
+                        <th className="text-right pb-2 font-medium">Recent share</th>
+                        <th className="text-right pb-2 font-medium">Day 7 % (recent)</th>
+                        <th className="text-right pb-2 font-medium">Ghost count</th>
+                        <th className="text-right pb-2 pr-1 font-medium">Ghost %</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {loginAnalysis.topProducts.slice(0, 5).map(p => {
+                        const ghostColor = p.ghostRate >= 20 ? '#dc2626' : p.ghostRate >= 10 ? '#d97706' : '#059669';
+                        const day7Color = p.day7Rate >= 85 ? '#059669' : p.day7Rate >= 75 ? '#d97706' : '#dc2626';
+                        return (
+                          <tr key={p.productName} className="border-b border-amber-50 last:border-0">
+                            <td className="py-1.5 pl-1 font-medium text-gray-700" style={{ maxWidth: 160 }}>
+                              <div className="truncate" title={p.productName}>{p.productName}</div>
+                            </td>
+                            <td className="py-1.5 text-right text-gray-400">{p.recentShare}%</td>
+                            <td className="py-1.5 text-right font-semibold" style={{ color: day7Color }}>
+                              {p.day7Rate}%
+                              {p.prevDay7Rate !== null && (
+                                <span className={`ml-1 font-normal text-[10px] ${p.day7Rate >= p.prevDay7Rate ? 'text-emerald-600' : 'text-red-500'}`}>
+                                  ({p.day7Rate >= p.prevDay7Rate ? '+' : ''}{Math.round((p.day7Rate - p.prevDay7Rate) * 10) / 10}pp)
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-1.5 text-right text-gray-500">{p.ghostCount.toLocaleString()}</td>
+                            <td className="py-1.5 text-right pr-1 font-semibold" style={{ color: ghostColor }}>{p.ghostRate}%</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-[10px] text-gray-400 mt-2">Ghost % = eligible buyers in mature cohorts (14d+) who never logged in as of {new Date(loginAnalysis.weekRange.max + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })} snapshot</p>
+              </div>
+
+              {/* Finding 2 — Yearly vs Monthly */}
+              <div className="border border-violet-100 bg-violet-50 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-bold text-violet-700 bg-violet-100 px-2 py-0.5 rounded-full">Finding 2</span>
+                  <span className="text-sm font-semibold text-gray-800 flex-1">Yearly subscribers log in {yearlyMonthlyGap}pp less within Day 7</span>
+                  <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">−{yearlyMonthlyGap}pp gap</span>
+                </div>
+                <p className="text-xs text-gray-600">
+                  Monthly buyers log in at <strong>{loginAnalysis.monthlyCustomers.day7Rate}%</strong> within 7 days vs Yearly at <strong>{loginAnalysis.yearlyCustomers.day7Rate}%</strong>
+                  {loginAnalysis.monthlyCustomers.prevDay7Rate !== null && loginAnalysis.yearlyCustomers.prevDay7Rate !== null && (
+                    <span> (prev 4w: Monthly {loginAnalysis.monthlyCustomers.prevDay7Rate}% · Yearly {loginAnalysis.yearlyCustomers.prevDay7Rate}%)</span>
+                  )}. Paying upfront removes monthly urgency — Yearly subscribers feel no pressure to &quot;use what they&apos;re paying for&quot; and are more likely to ghost, building churn risk at renewal.
+                </p>
+              </div>
+
+              {/* Finding 3 — Ghost buyer total */}
+              <div className="border border-orange-100 bg-orange-50 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-bold text-orange-700 bg-orange-100 px-2 py-0.5 rounded-full">Finding 3</span>
+                  <span className="text-sm font-semibold text-gray-800 flex-1">{ghostRate}% of eligible buyers never logged in within 7 days</span>
+                  <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">{loginAnalysis.ghostTotalMature.toLocaleString()} users</span>
+                </div>
+                <p className="text-xs text-gray-600">
+                  Across all mature cohorts, <strong>{loginAnalysis.ghostTotalMature.toLocaleString()}</strong> of <strong>{loginAnalysis.eligibleTotalMature.toLocaleString()}</strong> eligible buyers never logged in within 7 days. Users who don&apos;t log in within the first week are significantly less likely to ever activate — making Day 7 Login % the earliest leading indicator of churn.
+                </p>
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
 
       {/* What's driving the decline? — Engage Team only */}
       {!isIP && dropoff && !loading && dropoff.topProductShifts.length > 0 && (() => {

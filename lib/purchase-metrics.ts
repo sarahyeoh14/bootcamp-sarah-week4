@@ -15,10 +15,10 @@ import path from 'path';
 import fs from 'fs';
 import { getDb } from './db';
 
-const DATA_PATH = path.join(process.cwd(), 'data', 'l52weeks_product_metric_v2.json');
+const DATA_PATH = path.join(process.cwd(), 'data', 'l52weeks_product_metric_v5.json');
 
 // Schema version — bump whenever the table structure changes so the DB is rebuilt.
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 13;
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -50,6 +50,7 @@ function ensureTable(): void {
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS purchase_cohorts (
+      purchase_record_id TEXT NOT NULL PRIMARY KEY,
       user_id TEXT NOT NULL,
       purchase_week TEXT NOT NULL,
       purchase_date TEXT NOT NULL,
@@ -69,10 +70,10 @@ function ensureTable(): void {
       place_in_funnel TEXT,
       product_type TEXT,
       has_funnel_quest INTEGER DEFAULT 0,
-      product_name TEXT,
-      PRIMARY KEY (user_id, purchase_week)
+      product_name TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_pc_week ON purchase_cohorts(purchase_week);
+    CREATE INDEX IF NOT EXISTS idx_pc_user ON purchase_cohorts(user_id);
     CREATE INDEX IF NOT EXISTS idx_pc_traffic ON purchase_cohorts(traffic_source);
     CREATE INDEX IF NOT EXISTS idx_pc_campaign ON purchase_cohorts(campaign_type);
   `);
@@ -105,12 +106,12 @@ export function seedPurchaseMetricsIfNeeded(): void {
     if (!fs.existsSync(DATA_PATH)) return;
 
     // Read file in chunks and parse NDJSON.
-    // Collect one entry per (user_id, purchase_week). For a given user+week pair,
-    // keep the row with the earliest purchase_date (to get stable filter dimensions).
+    // Deduplicate by purchase_record_id (handles JOIN fanout duplicates from BigQuery).
+    // For a given record_id that appears multiple times, keep the first seen.
     const CHUNK = 65536;
     const fd = fs.openSync(DATA_PATH, 'r');
     const buf = Buffer.alloc(CHUNK);
-    // key: "userId|purchase_week"
+    // key: purchase_record_id
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pairMap = new Map<string, any>();
     let leftover = '';
@@ -120,23 +121,18 @@ export function seedPurchaseMetricsIfNeeded(): void {
     function processRow(r: any) {
       const userId = r.user_id as string;
       if (!userId) return;
+      const recordId = r.purchase_record_id as string;
+      if (!recordId) return;
       const pDate = typeof r.purchase_timestamp === 'string'
         ? r.purchase_timestamp.substring(0, 10) : '';
       if (!pDate) return;
 
+      // Skip duplicate record_ids (JOIN fanout artifacts)
+      if (pairMap.has(recordId)) return;
+
       const week = mondayOfWeek(pDate);
-      const key = `${userId}|${week}`;
-      const existing = pairMap.get(key);
-      // Keep earliest purchase_date within this week for stable dimensions.
-      // For has_funnel_quest_id: OR across all purchases — if any purchase in the
-      // week has a funnel quest, the cohort row should reflect that.
       const hasQuest = r.has_funnel_quest_id === true || r.has_funnel_quest_id === 'true';
-      if (!existing || pDate < existing._date) {
-        pairMap.set(key, { ...r, _date: pDate, _week: week, _has_quest: hasQuest });
-      } else {
-        // Later purchase in the same week — OR the quest flag
-        if (hasQuest) existing._has_quest = true;
-      }
+      pairMap.set(recordId, { ...r, _date: pDate, _week: week, _has_quest: hasQuest });
     }
 
     try {
@@ -161,18 +157,18 @@ export function seedPurchaseMetricsIfNeeded(): void {
 
     const insert = db.prepare(`
       INSERT OR IGNORE INTO purchase_cohorts (
-        user_id, purchase_week, purchase_date,
+        purchase_record_id, user_id, purchase_week, purchase_date,
         days_to_login, days_to_activation,
         traffic_source, campaign_type, payment_frequency, device_category,
         has_discount, order_amount, product_funnel,
         is_mc_funnel, is_vsl_funnel, is_first_order,
         order_type, place_in_funnel, product_type, has_funnel_quest,
         product_name
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
 
     const insertAll = db.transaction(() => {
-      for (const r of pairMap.values()) {
+      for (const [recordId, r] of pairMap.entries()) {
         const userId = r.user_id as string;
         const pDate = r._date as string;
         const week = r._week as string;
@@ -210,7 +206,7 @@ export function seedPurchaseMetricsIfNeeded(): void {
         const productName = (r.product_name as string) || null;
 
         insert.run(
-          userId, week, pDate,
+          recordId, userId, week, pDate,
           loginVal, actVal,
           trafficSrc, campaignType, freq, device,
           hasDiscount, isNaN(orderAmt ?? NaN) ? null : orderAmt,
@@ -353,18 +349,18 @@ export function getWeeklyMetrics(filters: PurchaseFilters = {}): WeeklyMetricRow
   const rows = db.prepare(`
     SELECT
       purchase_week as week,
-      COUNT(*) as total,
-      SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN 1 ELSE 0 END) as login_eligible,
+      COUNT(DISTINCT user_id) as total,
+      COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN user_id END) as login_eligible,
       ROUND(
-        SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 AND days_to_login IS NOT NULL AND days_to_login = 0 THEN 1.0 ELSE 0 END)
-        * 100.0 / NULLIF(SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN 1 ELSE 0 END), 0)
+        COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 AND days_to_login IS NOT NULL AND days_to_login = 0 THEN user_id END)
+        * 100.0 / NULLIF(COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN user_id END), 0)
       , 1) as day0_login,
       ROUND(
-        SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 AND days_to_login IS NOT NULL AND days_to_login <= 7 THEN 1.0 ELSE 0 END)
-        * 100.0 / NULLIF(SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN 1 ELSE 0 END), 0)
+        COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 AND days_to_login IS NOT NULL AND days_to_login <= 7 THEN user_id END)
+        * 100.0 / NULLIF(COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN user_id END), 0)
       , 1) as day7_login,
-      ROUND(SUM(CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN 1.0 ELSE 0 END) * 100.0 / COUNT(*), 1) as day15_act,
-      ROUND(SUM(CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 30 THEN 1.0 ELSE 0 END) * 100.0 / COUNT(*), 1) as day30_act
+      ROUND(COUNT(DISTINCT CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN user_id END) * 100.0 / NULLIF(COUNT(DISTINCT user_id), 0), 1) as day15_act,
+      ROUND(COUNT(DISTINCT CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 30 THEN user_id END) * 100.0 / NULLIF(COUNT(DISTINCT user_id), 0), 1) as day30_act
     FROM purchase_cohorts
     ${where}
     GROUP BY purchase_week
@@ -484,12 +480,16 @@ export interface SegmentRow {
   label: string;
   total: number;
   loginEligible: number;
+  day0LoginPct: number | null;
   day7LoginPct: number | null;
   day15ActPct: number | null;
-  // 52-week baseline averages
+  // 12-week baseline averages
   baselineTotal: number;
+  baselineDay0LoginPct: number | null;
   baselineDay7LoginPct: number | null;
   baselineDay15ActPct: number | null;
+  /** YYYY-MM-DD of the earliest week this segment label appears in the dataset */
+  firstWeek?: string;
 }
 
 export interface SegmentGroup {
@@ -532,27 +532,35 @@ export function getSegmentComparison(filters: PurchaseFilters = {}, weeksCount =
   const baselineRangeParams: unknown[] = [...params, baselineMin, baselineMax];
 
   const SELECT_METRICS = `
-    COUNT(*) as total,
-    SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN 1 ELSE 0 END) as login_eligible,
+    COUNT(DISTINCT user_id) as total,
+    COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN user_id END) as login_eligible,
     ROUND(
-      SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 AND days_to_login IS NOT NULL AND days_to_login <= 7 THEN 1.0 ELSE 0 END)
-      * 100.0 / NULLIF(SUM(CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN 1 ELSE 0 END), 0)
+      COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 AND days_to_login IS NOT NULL AND days_to_login = 0 THEN user_id END)
+      * 100.0 / NULLIF(COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN user_id END), 0)
+    , 1) as day0_login,
+    ROUND(
+      COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 AND days_to_login IS NOT NULL AND days_to_login <= 7 THEN user_id END)
+      * 100.0 / NULLIF(COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN user_id END), 0)
     , 1) as day7_login,
-    ROUND(SUM(CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN 1.0 ELSE 0 END) * 100.0 / COUNT(*), 1) as day15_act
+    ROUND(COUNT(DISTINCT CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN user_id END) * 100.0 / NULLIF(COUNT(DISTINCT user_id), 0), 1) as day15_act
   `;
 
-  type RawMetrics = { total: number; login_eligible: number; day7_login: number; day15_act: number };
-  const EMPTY: RawMetrics = { total: 0, login_eligible: 0, day7_login: 0, day15_act: 0 };
+  type RawMetrics = { total: number; login_eligible: number; day0_login: number; day7_login: number; day15_act: number };
+  const EMPTY: RawMetrics = { total: 0, login_eligible: 0, day0_login: 0, day7_login: 0, day15_act: 0 };
 
   function toRow(label: string, r: RawMetrics, b: RawMetrics): SegmentRow {
+    const eligible = (r.login_eligible ?? 0) > 0;
+    const bEligible = (b.login_eligible ?? 0) > 0;
     return {
       label,
       total: r.total,
       loginEligible: r.login_eligible ?? 0,
-      day7LoginPct: (r.login_eligible ?? 0) > 0 ? (r.day7_login ?? 0) : null,
+      day0LoginPct: eligible ? (r.day0_login ?? 0) : null,
+      day7LoginPct: eligible ? (r.day7_login ?? 0) : null,
       day15ActPct: r.total > 0 ? (r.day15_act ?? 0) : null,
       baselineTotal: b.total,
-      baselineDay7LoginPct: (b.login_eligible ?? 0) > 0 ? (b.day7_login ?? 0) : null,
+      baselineDay0LoginPct: bEligible ? (b.day0_login ?? 0) : null,
+      baselineDay7LoginPct: bEligible ? (b.day7_login ?? 0) : null,
       baselineDay15ActPct: b.total > 0 ? (b.day15_act ?? 0) : null,
     };
   }
@@ -585,7 +593,18 @@ export function getSegmentComparison(filters: PurchaseFilters = {}, weeksCount =
     `).all(...baselineRangeParams) as ({ seg: string } & RawMetrics)[]);
     const baselineMap = new Map(baselineRows.map(r => [r.seg, r]));
 
-    return recentRows.map(r => toRow(r.seg, r, baselineMap.get(r.seg) ?? EMPTY));
+    // First week each segment label appears in the entire dataset (for recency labelling)
+    const firstWeekRows = (db.prepare(`
+      SELECT ${col} as seg, MIN(purchase_week) as first_week
+      FROM purchase_cohorts WHERE ${col} IS NOT NULL AND ${col} != ''
+      GROUP BY ${col}
+    `).all() as { seg: string; first_week: string }[]);
+    const firstWeekMap = new Map(firstWeekRows.map(r => [r.seg, r.first_week]));
+
+    return recentRows.map(r => ({
+      ...toRow(r.seg, r, baselineMap.get(r.seg) ?? EMPTY),
+      firstWeek: firstWeekMap.get(r.seg),
+    }));
   }
 
   const paymentRows = (
@@ -620,6 +639,145 @@ export function getSegmentComparison(filters: PurchaseFilters = {}, weeksCount =
     { dimension: 'Acquisition',   rows: acquisitionRows },
     { dimension: 'Device',        rows: queryGrouped('device_category') },
   ].filter(g => g.rows.length > 0);
+}
+
+// ---------------------------------------------------------------------------
+// IP Team — Login analysis (ghost buyers, Day 7 breakdown)
+// ---------------------------------------------------------------------------
+
+export interface ProductLoginData {
+  productName: string;
+  recentTotal: number;
+  recentShare: number;
+  day7Rate: number;
+  prevDay7Rate: number | null;
+  ghostCount: number;   // eligible users in mature cohorts who never logged in
+  ghostRate: number;    // % of mature-cohort eligible who never logged in
+}
+
+export interface LoginAnalysis {
+  weekRange: { min: string; max: string };
+  overall: { total: number; day7Rate: number; prevDay7Rate: number | null; prevTotal: number };
+  monthlyCustomers: { total: number; day7Rate: number; prevDay7Rate: number | null };
+  yearlyCustomers:  { total: number; day7Rate: number; prevDay7Rate: number | null };
+  topProducts: ProductLoginData[];
+  ghostTotalMature: number;    // eligible users in mature cohorts who never logged in
+  eligibleTotalMature: number;
+}
+
+export function getLoginAnalysis(filters: PurchaseFilters = {}): LoginAnalysis | null {
+  const db = getDb();
+  const { where, params } = buildWhere(filters);
+
+  const completedCutoff = new Date(SNAPSHOT_DATE);
+  completedCutoff.setUTCDate(completedCutoff.getUTCDate() - 7);
+  const completedCutoffStr = completedCutoff.toISOString().substring(0, 10);
+
+  const recentWeekRows = db.prepare(
+    `SELECT DISTINCT purchase_week FROM purchase_cohorts WHERE purchase_week <= ? ORDER BY purchase_week DESC LIMIT 4`
+  ).all(completedCutoffStr) as { purchase_week: string }[];
+  if (recentWeekRows.length === 0) return null;
+
+  const maxWeek = recentWeekRows[0].purchase_week;
+  const minWeek = recentWeekRows[recentWeekRows.length - 1].purchase_week;
+  // weeksBefore defined below — inline the logic here
+  const prevMax = (() => { const d = new Date(minWeek + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - 7); return d.toISOString().substring(0, 10); })();
+  const prevMin = (() => { const d = new Date(minWeek + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - 28); return d.toISOString().substring(0, 10); })();
+
+  function mkWhere(wMin: string, wMax: string, extra = '') {
+    const base = where ? `${where} AND purchase_week BETWEEN ? AND ?` : `WHERE purchase_week BETWEEN ? AND ?`;
+    return { clause: extra ? `${base} AND ${extra}` : base, p: [...params, wMin, wMax] as unknown[] };
+  }
+
+  function day7Seg(wMin: string, wMax: string, extra = '') {
+    const { clause, p } = mkWhere(wMin, wMax, extra);
+    const r = db.prepare(`
+      SELECT
+        COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order=1 THEN user_id END) as total,
+        COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order=1 AND days_to_login IS NOT NULL AND days_to_login <= 7 THEN user_id END) as day7
+      FROM purchase_cohorts ${clause}
+    `).get(...p) as { total: number; day7: number };
+    return { total: r.total ?? 0, day7Rate: (r.total ?? 0) > 0 ? Math.round((r.day7 ?? 0) / r.total * 1000) / 10 : 0 };
+  }
+
+  const cur = day7Seg(minWeek, maxWeek);
+  const prv = day7Seg(prevMin, prevMax);
+
+  function paymentRow(freq: string) {
+    const c = day7Seg(minWeek, maxWeek, `payment_frequency = '${freq}'`);
+    const p = day7Seg(prevMin, prevMax, `payment_frequency = '${freq}'`);
+    return { total: c.total, day7Rate: c.day7Rate, prevDay7Rate: p.total > 0 ? p.day7Rate : null };
+  }
+
+  // Mature cohorts = purchase_week <= snapshot - 14 days (Day 7 window closed)
+  const matureCutoff = new Date(SNAPSHOT_DATE);
+  matureCutoff.setUTCDate(matureCutoff.getUTCDate() - 14);
+  const matureCutoffStr = matureCutoff.toISOString().substring(0, 10);
+
+  const eligBase = where
+    ? `${where} AND purchase_week <= ? AND order_type IN ('New','Trial') AND is_first_order = 1`
+    : `WHERE purchase_week <= ? AND order_type IN ('New','Trial') AND is_first_order = 1`;
+  const eligP = [...params, matureCutoffStr] as unknown[];
+
+  const ghostTotals = db.prepare(`
+    SELECT
+      COUNT(DISTINCT user_id) as eligible,
+      COUNT(DISTINCT CASE WHEN days_to_login IS NULL THEN user_id END) as ghost
+    FROM purchase_cohorts ${eligBase}
+  `).get(...eligP) as { eligible: number; ghost: number };
+
+  const ghostByProduct = (db.prepare(`
+    SELECT COALESCE(product_name,'(null)') as prod,
+      COUNT(DISTINCT user_id) as eligible,
+      COUNT(DISTINCT CASE WHEN days_to_login IS NULL THEN user_id END) as ghost
+    FROM purchase_cohorts ${eligBase} AND product_name IS NOT NULL
+    GROUP BY prod ORDER BY eligible DESC
+  `).all(...eligP) as { prod: string; eligible: number; ghost: number }[]);
+  const ghostMap = new Map(ghostByProduct.map(r => [r.prod, r]));
+
+  const { clause: rc, p: rp } = mkWhere(minWeek, maxWeek);
+  const { clause: pc, p: pp } = mkWhere(prevMin, prevMax);
+
+  const recentProds = (db.prepare(`
+    SELECT COALESCE(product_name,'(null)') as prod,
+      COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order=1 THEN user_id END) as total,
+      COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order=1 AND days_to_login IS NOT NULL AND days_to_login <= 7 THEN user_id END) as day7
+    FROM purchase_cohorts ${rc} AND product_name IS NOT NULL
+    GROUP BY prod ORDER BY total DESC LIMIT 8
+  `).all(...rp) as { prod: string; total: number; day7: number }[]);
+
+  const prevProds = (db.prepare(`
+    SELECT COALESCE(product_name,'(null)') as prod,
+      COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order=1 THEN user_id END) as total,
+      COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order=1 AND days_to_login IS NOT NULL AND days_to_login <= 7 THEN user_id END) as day7
+    FROM purchase_cohorts ${pc} AND product_name IS NOT NULL GROUP BY prod
+  `).all(...pp) as { prod: string; total: number; day7: number }[]);
+  const prevProdMap = new Map(prevProds.map(r => [r.prod, r]));
+
+  const totalRecent = recentProds.reduce((s, r) => s + r.total, 0);
+  const topProducts: ProductLoginData[] = recentProds.map(r => {
+    const prev = prevProdMap.get(r.prod);
+    const ghost = ghostMap.get(r.prod);
+    return {
+      productName: r.prod,
+      recentTotal: r.total,
+      recentShare: totalRecent > 0 ? Math.round(r.total / totalRecent * 1000) / 10 : 0,
+      day7Rate: r.total > 0 ? Math.round(r.day7 / r.total * 1000) / 10 : 0,
+      prevDay7Rate: prev && prev.total > 0 ? Math.round(prev.day7 / prev.total * 1000) / 10 : null,
+      ghostCount: ghost?.ghost ?? 0,
+      ghostRate: ghost && ghost.eligible > 0 ? Math.round(ghost.ghost / ghost.eligible * 1000) / 10 : 0,
+    };
+  });
+
+  return {
+    weekRange: { min: minWeek, max: maxWeek },
+    overall: { total: cur.total, day7Rate: cur.day7Rate, prevDay7Rate: prv.total > 0 ? prv.day7Rate : null, prevTotal: prv.total },
+    monthlyCustomers: paymentRow('Monthly'),
+    yearlyCustomers:  paymentRow('Yearly'),
+    topProducts,
+    ghostTotalMature: ghostTotals.ghost ?? 0,
+    eligibleTotalMature: ghostTotals.eligible ?? 0,
+  };
 }
 
 /** Return the YYYY-MM-DD of the Monday n weeks before the given Monday */
@@ -668,8 +826,8 @@ export function getLoginDropoffAnalysis(filters: PurchaseFilters = {}): DropoffA
     const { clause, p } = makeWhere(wMin, wMax, extra);
     const r = db.prepare(`
       SELECT
-        COUNT(*) as total,
-        ROUND(SUM(CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN 1.0 ELSE 0 END) * 100.0 / COUNT(*), 1) as day15
+        COUNT(DISTINCT user_id) as total,
+        ROUND(COUNT(DISTINCT CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN user_id END) * 100.0 / NULLIF(COUNT(DISTINCT user_id), 0), 1) as day15
       FROM purchase_cohorts ${clause}
     `).get(...p) as { total: number; day15: number };
     return { total: r.total, day15Rate: r.day15 ?? 0 };
@@ -695,9 +853,9 @@ export function getLoginDropoffAnalysis(filters: PurchaseFilters = {}): DropoffA
     return (db.prepare(`
       SELECT
         product_name,
-        COUNT(*) as cnt,
-        ROUND(SUM(CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN 1.0 ELSE 0 END) * 100.0 / COUNT(*), 1) as day15,
-        ROUND(SUM(CASE WHEN has_funnel_quest = 1 THEN 1.0 ELSE 0 END) * 100.0 / COUNT(*), 1) as quest_share
+        COUNT(DISTINCT user_id) as cnt,
+        ROUND(COUNT(DISTINCT CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN user_id END) * 100.0 / NULLIF(COUNT(DISTINCT user_id), 0), 1) as day15,
+        ROUND(COUNT(DISTINCT CASE WHEN has_funnel_quest = 1 THEN user_id END) * 100.0 / NULLIF(COUNT(DISTINCT user_id), 0), 1) as quest_share
       FROM purchase_cohorts ${clause}
       GROUP BY product_name
       ORDER BY cnt DESC
