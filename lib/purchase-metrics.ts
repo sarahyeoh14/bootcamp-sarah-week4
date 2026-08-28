@@ -655,14 +655,34 @@ export interface ProductLoginData {
   ghostRate: number;    // % of mature-cohort eligible who never logged in
 }
 
+export interface DeviceLoginData {
+  device: string;
+  eligible: number;
+  day7Rate: number;
+  lateRate: number;  // logged in after day 7
+  ghostRate: number; // never logged in
+}
+
+export interface PriceBandData {
+  label: string;
+  eligible: number;
+  day7Rate: number;
+  lateRate: number;
+  ghostRate: number;
+}
+
 export interface LoginAnalysis {
   weekRange: { min: string; max: string };
   overall: { total: number; day7Rate: number; prevDay7Rate: number | null; prevTotal: number };
   monthlyCustomers: { total: number; day7Rate: number; prevDay7Rate: number | null };
   yearlyCustomers:  { total: number; day7Rate: number; prevDay7Rate: number | null };
   topProducts: ProductLoginData[];
-  ghostTotalMature: number;    // eligible users in mature cohorts who never logged in
+  ghostTotalMature: number;      // never logged in (mature cohorts)
+  lateLoggerMature: number;      // logged in after day 7 (mature cohorts)
   eligibleTotalMature: number;
+  deviceBreakdown: DeviceLoginData[];
+  priceBreakdown: PriceBandData[];
+  lateLoggerTiming: Array<{ bucket: string; count: number }>;
 }
 
 export function getLoginAnalysis(filters: PurchaseFilters = {}): LoginAnalysis | null {
@@ -722,9 +742,77 @@ export function getLoginAnalysis(filters: PurchaseFilters = {}): LoginAnalysis |
   const ghostTotals = db.prepare(`
     SELECT
       COUNT(DISTINCT user_id) as eligible,
+      COUNT(DISTINCT CASE WHEN days_to_login IS NULL THEN user_id END) as ghost,
+      COUNT(DISTINCT CASE WHEN days_to_login IS NOT NULL AND days_to_login > 7 THEN user_id END) as late_logger
+    FROM purchase_cohorts ${eligBase}
+  `).get(...eligP) as { eligible: number; ghost: number; late_logger: number };
+
+  // Device breakdown (mature cohorts)
+  const deviceRows = (db.prepare(`
+    SELECT
+      COALESCE(device_category, 'in-app') as device,
+      COUNT(DISTINCT user_id) as eligible,
+      COUNT(DISTINCT CASE WHEN days_to_login IS NOT NULL AND days_to_login <= 7 THEN user_id END) as day7,
+      COUNT(DISTINCT CASE WHEN days_to_login IS NOT NULL AND days_to_login > 7 THEN user_id END) as late,
       COUNT(DISTINCT CASE WHEN days_to_login IS NULL THEN user_id END) as ghost
     FROM purchase_cohorts ${eligBase}
-  `).get(...eligP) as { eligible: number; ghost: number };
+    GROUP BY device ORDER BY eligible DESC
+  `).all(...eligP) as { device: string; eligible: number; day7: number; late: number; ghost: number }[]);
+
+  const deviceBreakdown: DeviceLoginData[] = deviceRows
+    .filter(r => r.eligible >= 50)
+    .map(r => ({
+      device: r.device,
+      eligible: r.eligible,
+      day7Rate: r.eligible > 0 ? Math.round(r.day7 / r.eligible * 1000) / 10 : 0,
+      lateRate: r.eligible > 0 ? Math.round(r.late / r.eligible * 1000) / 10 : 0,
+      ghostRate: r.eligible > 0 ? Math.round(r.ghost / r.eligible * 1000) / 10 : 0,
+    }));
+
+  // Price band breakdown (mature cohorts)
+  const priceBandSql = `
+    SELECT
+      CASE
+        WHEN order_amount < 50  THEN 'Under $50'
+        WHEN order_amount < 100 THEN '$50–$99'
+        WHEN order_amount < 200 THEN '$100–$199'
+        WHEN order_amount < 400 THEN '$200–$399'
+        ELSE '$400+'
+      END as label,
+      MIN(order_amount) as min_amt,
+      COUNT(DISTINCT user_id) as eligible,
+      COUNT(DISTINCT CASE WHEN days_to_login IS NOT NULL AND days_to_login <= 7 THEN user_id END) as day7,
+      COUNT(DISTINCT CASE WHEN days_to_login IS NOT NULL AND days_to_login > 7 THEN user_id END) as late,
+      COUNT(DISTINCT CASE WHEN days_to_login IS NULL THEN user_id END) as ghost
+    FROM purchase_cohorts ${eligBase} AND order_amount IS NOT NULL
+    GROUP BY label ORDER BY MIN(order_amount)
+  `;
+  const priceRows = (db.prepare(priceBandSql).all(...eligP) as {
+    label: string; min_amt: number; eligible: number; day7: number; late: number; ghost: number;
+  }[]);
+  const priceBreakdown: PriceBandData[] = priceRows.map(r => ({
+    label: r.label,
+    eligible: r.eligible,
+    day7Rate: r.eligible > 0 ? Math.round(r.day7 / r.eligible * 1000) / 10 : 0,
+    lateRate: r.eligible > 0 ? Math.round(r.late / r.eligible * 1000) / 10 : 0,
+    ghostRate: r.eligible > 0 ? Math.round(r.ghost / r.eligible * 1000) / 10 : 0,
+  }));
+
+  // Late logger timing (how long after day 7 did they come back?)
+  const timingRows = (db.prepare(`
+    SELECT
+      CASE
+        WHEN days_to_login BETWEEN 8 AND 14 THEN '8–14d'
+        WHEN days_to_login BETWEEN 15 AND 30 THEN '15–30d'
+        WHEN days_to_login BETWEEN 31 AND 60 THEN '31–60d'
+        ELSE '60d+'
+      END as bucket,
+      MIN(days_to_login) as min_d,
+      COUNT(DISTINCT user_id) as cnt
+    FROM purchase_cohorts ${eligBase} AND days_to_login > 7
+    GROUP BY bucket ORDER BY MIN(days_to_login)
+  `).all(...eligP) as { bucket: string; min_d: number; cnt: number }[]);
+  const lateLoggerTiming = timingRows.map(r => ({ bucket: r.bucket, count: r.cnt }));
 
   const ghostByProduct = (db.prepare(`
     SELECT COALESCE(product_name,'(null)') as prod,
@@ -776,7 +864,11 @@ export function getLoginAnalysis(filters: PurchaseFilters = {}): LoginAnalysis |
     yearlyCustomers:  paymentRow('Yearly'),
     topProducts,
     ghostTotalMature: ghostTotals.ghost ?? 0,
+    lateLoggerMature: ghostTotals.late_logger ?? 0,
     eligibleTotalMature: ghostTotals.eligible ?? 0,
+    deviceBreakdown,
+    priceBreakdown,
+    lateLoggerTiming,
   };
 }
 

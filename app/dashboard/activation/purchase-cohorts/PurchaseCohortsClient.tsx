@@ -90,6 +90,22 @@ interface ProductLoginData {
   ghostRate: number;
 }
 
+interface DeviceLoginData {
+  device: string;
+  eligible: number;
+  day7Rate: number;
+  lateRate: number;
+  ghostRate: number;
+}
+
+interface PriceBandData {
+  label: string;
+  eligible: number;
+  day7Rate: number;
+  lateRate: number;
+  ghostRate: number;
+}
+
 interface LoginAnalysis {
   weekRange: { min: string; max: string };
   overall: { total: number; day7Rate: number; prevDay7Rate: number | null; prevTotal: number };
@@ -97,7 +113,11 @@ interface LoginAnalysis {
   yearlyCustomers:  { total: number; day7Rate: number; prevDay7Rate: number | null };
   topProducts: ProductLoginData[];
   ghostTotalMature: number;
+  lateLoggerMature: number;
   eligibleTotalMature: number;
+  deviceBreakdown: DeviceLoginData[];
+  priceBreakdown: PriceBandData[];
+  lateLoggerTiming: Array<{ bucket: string; count: number }>;
 }
 
 type Tab = 'ip' | 'engage';
@@ -909,25 +929,36 @@ export default function PurchaseCohortsClient() {
 
       {/* Who's not logging in? — IP Team only */}
       {isIP && loginAnalysis && !loading && (() => {
+        const nonDay7Total = loginAnalysis.lateLoggerMature + loginAnalysis.ghostTotalMature;
+        const lateLoggerPct = nonDay7Total > 0 ? Math.round(loginAnalysis.lateLoggerMature / nonDay7Total * 100) : 0;
+        const ghostOnlyPct  = nonDay7Total > 0 ? Math.round(loginAnalysis.ghostTotalMature  / nonDay7Total * 100) : 0;
+        const missedDay7Pct = loginAnalysis.eligibleTotalMature > 0
+          ? Math.round(nonDay7Total / loginAnalysis.eligibleTotalMature * 1000) / 10 : 0;
+
         const questGhosts = loginAnalysis.topProducts
           .filter(p => p.productName.toLowerCase().includes('quest'))
           .reduce((s, p) => s + p.ghostCount, 0);
         const questGhostPct = loginAnalysis.ghostTotalMature > 0
           ? Math.round(questGhosts / loginAnalysis.ghostTotalMature * 100) : 0;
+
         const yearlyMonthlyGap = Math.round(Math.abs(
           loginAnalysis.yearlyCustomers.day7Rate - loginAnalysis.monthlyCustomers.day7Rate
         ) * 10) / 10;
-        const ghostRate = loginAnalysis.eligibleTotalMature > 0
-          ? Math.round(loginAnalysis.ghostTotalMature / loginAnalysis.eligibleTotalMature * 1000) / 10 : 0;
+
         const overallDelta = loginAnalysis.overall.prevDay7Rate !== null
           ? Math.round((loginAnalysis.overall.day7Rate - loginAnalysis.overall.prevDay7Rate) * 10) / 10 : null;
+
+        // In-app vs best device for headline
+        const inApp   = loginAnalysis.deviceBreakdown.find(d => d.device === 'in-app');
+        const desktop = loginAnalysis.deviceBreakdown.find(d => d.device === 'desktop');
+        const deviceGap = inApp && desktop ? Math.round((desktop.day7Rate - inApp.day7Rate) * 10) / 10 : null;
 
         return (
           <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
             <div className="px-5 py-4 border-b border-gray-100">
               <h2 className="font-semibold text-gray-900">Who&apos;s not logging in?</h2>
               <p className="text-xs text-gray-500 mt-0.5">
-                Ghost buyer analysis · mature cohorts (14d+) · {loginAnalysis.eligibleTotalMature.toLocaleString()} eligible users
+                Mature cohorts (14d+ old) · {loginAnalysis.eligibleTotalMature.toLocaleString()} eligible buyers
                 {overallDelta !== null && (
                   <span className={`ml-2 font-semibold ${overallDelta >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
                     · Day 7 {overallDelta >= 0 ? '+' : ''}{overallDelta}pp recent vs prev 4w
@@ -937,33 +968,147 @@ export default function PurchaseCohortsClient() {
             </div>
             <div className="p-5 space-y-4">
 
-              {/* Finding 1 — Quest products */}
-              <div className="border border-amber-100 bg-amber-50 rounded-xl p-4">
+              {/* Finding 1 — What happened to non-loggers? */}
+              <div className="border border-blue-100 bg-blue-50 rounded-xl p-4">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">Finding 1</span>
-                  <span className="text-sm font-semibold text-gray-800 flex-1">Quest products drive {questGhostPct}% of ghost buyers</span>
-                  <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">{questGhosts.toLocaleString()} users</span>
+                  <span className="text-xs font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full">Finding 1</span>
+                  <span className="text-sm font-semibold text-gray-800 flex-1">
+                    {missedDay7Pct}% missed the 7-day window — {lateLoggerPct}% eventually came back, {ghostOnlyPct}% never did
+                  </span>
+                  <span className="text-xs font-bold text-gray-600 bg-gray-100 border border-gray-200 px-2 py-0.5 rounded-full whitespace-nowrap">{nonDay7Total.toLocaleString()} users</span>
                 </div>
                 <p className="text-xs text-gray-600 mb-3">
-                  Quest All Access and Quest Only account for {questGhostPct}% of all buyers who never logged in. These broad-catalogue products attract discovery buyers with no specific content goal — unlike Pathway products where the topic itself creates urgency to start.
+                  Of the {nonDay7Total.toLocaleString()} buyers who didn&apos;t log in within 7 days: <strong>{loginAnalysis.lateLoggerMature.toLocaleString()} logged in late</strong> (after day 7) and <strong>{loginAnalysis.ghostTotalMature.toLocaleString()} never logged in at all</strong>. Late loggers show the product has value — they&apos;re reachable through nudges. True ghosts are at high churn risk.
+                </p>
+                {loginAnalysis.lateLoggerTiming.length > 0 && (
+                  <div>
+                    <p className="text-[10px] text-gray-500 font-medium mb-1.5">When did late loggers come back?</p>
+                    <div className="flex gap-2 flex-wrap">
+                      {loginAnalysis.lateLoggerTiming.map(t => (
+                        <div key={t.bucket} className="flex flex-col items-center bg-white border border-blue-100 rounded-lg px-3 py-2 min-w-[64px]">
+                          <span className="text-xs font-bold text-blue-700">{t.count.toLocaleString()}</span>
+                          <span className="text-[10px] text-gray-500 mt-0.5">{t.bucket}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Finding 2 — Why didn't they log in? Device + Price */}
+              <div className="border border-amber-100 bg-amber-50 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">Finding 2</span>
+                  <span className="text-sm font-semibold text-gray-800 flex-1">
+                    {deviceGap !== null
+                      ? `In-app buyers log in ${deviceGap}pp less than desktop — and take longer to come back`
+                      : 'Purchase channel drives the login gap'}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-600 mb-3">
+                  In-app purchases (no browser redirect) have the lowest Day 7 rate and the highest late-logger rate — users bought but weren&apos;t routed to login. Desktop converts best. Higher price points ($400+) also show elevated ghost rates, possibly buyer&apos;s remorse before logging in.
+                </p>
+
+                {/* Device table */}
+                {loginAnalysis.deviceBreakdown.length > 0 && (
+                  <div className="mb-3">
+                    <p className="text-[10px] text-gray-500 font-medium mb-1.5">By purchase channel</p>
+                    <div className="overflow-x-auto -mx-1">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-gray-400 border-b border-amber-100">
+                            <th className="text-left pb-1.5 pl-1 font-medium">Channel</th>
+                            <th className="text-right pb-1.5 font-medium">Buyers</th>
+                            <th className="text-right pb-1.5 font-medium">Day 7 login %</th>
+                            <th className="text-right pb-1.5 font-medium">Logged in late</th>
+                            <th className="text-right pb-1.5 pr-1 font-medium">Never logged in</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {loginAnalysis.deviceBreakdown.map(d => {
+                            const d7Color = d.day7Rate >= 90 ? '#059669' : d.day7Rate >= 80 ? '#d97706' : '#dc2626';
+                            const ghostColor = d.ghostRate >= 12 ? '#dc2626' : d.ghostRate >= 8 ? '#d97706' : '#6b7280';
+                            return (
+                              <tr key={d.device} className="border-b border-amber-50 last:border-0">
+                                <td className="py-1.5 pl-1 font-medium text-gray-700 capitalize">{d.device}</td>
+                                <td className="py-1.5 text-right text-gray-400">{d.eligible.toLocaleString()}</td>
+                                <td className="py-1.5 text-right font-semibold" style={{ color: d7Color }}>{d.day7Rate}%</td>
+                                <td className="py-1.5 text-right text-blue-600">{d.lateRate}%</td>
+                                <td className="py-1.5 text-right pr-1 font-semibold" style={{ color: ghostColor }}>{d.ghostRate}%</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Price band table */}
+                {loginAnalysis.priceBreakdown.length > 0 && (
+                  <div>
+                    <p className="text-[10px] text-gray-500 font-medium mb-1.5">By price point</p>
+                    <div className="overflow-x-auto -mx-1">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-gray-400 border-b border-amber-100">
+                            <th className="text-left pb-1.5 pl-1 font-medium">Price band</th>
+                            <th className="text-right pb-1.5 font-medium">Buyers</th>
+                            <th className="text-right pb-1.5 font-medium">Day 7 login %</th>
+                            <th className="text-right pb-1.5 font-medium">Logged in late</th>
+                            <th className="text-right pb-1.5 pr-1 font-medium">Never logged in</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {loginAnalysis.priceBreakdown.map(p => {
+                            const d7Color = p.day7Rate >= 90 ? '#059669' : p.day7Rate >= 85 ? '#d97706' : '#dc2626';
+                            const ghostColor = p.ghostRate >= 10 ? '#dc2626' : p.ghostRate >= 8 ? '#d97706' : '#6b7280';
+                            return (
+                              <tr key={p.label} className="border-b border-amber-50 last:border-0">
+                                <td className="py-1.5 pl-1 font-medium text-gray-700">{p.label}</td>
+                                <td className="py-1.5 text-right text-gray-400">{p.eligible.toLocaleString()}</td>
+                                <td className="py-1.5 text-right font-semibold" style={{ color: d7Color }}>{p.day7Rate}%</td>
+                                <td className="py-1.5 text-right text-blue-600">{p.lateRate}%</td>
+                                <td className="py-1.5 text-right pr-1 font-semibold" style={{ color: ghostColor }}>{p.ghostRate}%</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Finding 3 — Who are ghost buyers? (product + payment freq) */}
+              <div className="border border-orange-100 bg-orange-50 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-xs font-bold text-orange-700 bg-orange-100 px-2 py-0.5 rounded-full">Finding 3</span>
+                  <span className="text-sm font-semibold text-gray-800 flex-1">
+                    Quest products drive {questGhostPct}% of ghost buyers · Yearly buyers lag Monthly by {yearlyMonthlyGap}pp
+                  </span>
+                  <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">{loginAnalysis.ghostTotalMature.toLocaleString()} ghosts</span>
+                </div>
+                <p className="text-xs text-gray-600 mb-3">
+                  Quest All Access and Quest Only dominate ghost buyers — broad-catalogue products attract discovery buyers with no specific content urgency. Yearly subscribers ({loginAnalysis.yearlyCustomers.day7Rate}% Day 7) log in less than Monthly ({loginAnalysis.monthlyCustomers.day7Rate}% Day 7) — paying upfront removes the &quot;use what I pay for&quot; pressure.
                 </p>
                 <div className="overflow-x-auto -mx-1">
                   <table className="w-full text-xs">
                     <thead>
-                      <tr className="text-gray-400 border-b border-amber-100">
+                      <tr className="text-gray-400 border-b border-orange-100">
                         <th className="text-left pb-2 pl-1 font-medium">Product</th>
-                        <th className="text-right pb-2 font-medium">Recent share</th>
-                        <th className="text-right pb-2 font-medium">Day 7 % (recent)</th>
+                        <th className="text-right pb-2 font-medium">Share</th>
+                        <th className="text-right pb-2 font-medium">Day 7 %</th>
                         <th className="text-right pb-2 font-medium">Ghost count</th>
                         <th className="text-right pb-2 pr-1 font-medium">Ghost %</th>
                       </tr>
                     </thead>
                     <tbody>
                       {loginAnalysis.topProducts.slice(0, 5).map(p => {
-                        const ghostColor = p.ghostRate >= 20 ? '#dc2626' : p.ghostRate >= 10 ? '#d97706' : '#059669';
-                        const day7Color = p.day7Rate >= 85 ? '#059669' : p.day7Rate >= 75 ? '#d97706' : '#dc2626';
+                        const ghostColor = p.ghostRate >= 15 ? '#dc2626' : p.ghostRate >= 8 ? '#d97706' : '#059669';
+                        const day7Color  = p.day7Rate  >= 88 ? '#059669' : p.day7Rate  >= 80 ? '#d97706' : '#dc2626';
                         return (
-                          <tr key={p.productName} className="border-b border-amber-50 last:border-0">
+                          <tr key={p.productName} className="border-b border-orange-50 last:border-0">
                             <td className="py-1.5 pl-1 font-medium text-gray-700" style={{ maxWidth: 160 }}>
                               <div className="truncate" title={p.productName}>{p.productName}</div>
                             </td>
@@ -984,34 +1129,7 @@ export default function PurchaseCohortsClient() {
                     </tbody>
                   </table>
                 </div>
-                <p className="text-[10px] text-gray-400 mt-2">Ghost % = eligible buyers in mature cohorts (14d+) who never logged in as of {new Date(loginAnalysis.weekRange.max + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })} snapshot</p>
-              </div>
-
-              {/* Finding 2 — Yearly vs Monthly */}
-              <div className="border border-violet-100 bg-violet-50 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs font-bold text-violet-700 bg-violet-100 px-2 py-0.5 rounded-full">Finding 2</span>
-                  <span className="text-sm font-semibold text-gray-800 flex-1">Yearly subscribers log in {yearlyMonthlyGap}pp less within Day 7</span>
-                  <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">−{yearlyMonthlyGap}pp gap</span>
-                </div>
-                <p className="text-xs text-gray-600">
-                  Monthly buyers log in at <strong>{loginAnalysis.monthlyCustomers.day7Rate}%</strong> within 7 days vs Yearly at <strong>{loginAnalysis.yearlyCustomers.day7Rate}%</strong>
-                  {loginAnalysis.monthlyCustomers.prevDay7Rate !== null && loginAnalysis.yearlyCustomers.prevDay7Rate !== null && (
-                    <span> (prev 4w: Monthly {loginAnalysis.monthlyCustomers.prevDay7Rate}% · Yearly {loginAnalysis.yearlyCustomers.prevDay7Rate}%)</span>
-                  )}. Paying upfront removes monthly urgency — Yearly subscribers feel no pressure to &quot;use what they&apos;re paying for&quot; and are more likely to ghost, building churn risk at renewal.
-                </p>
-              </div>
-
-              {/* Finding 3 — Ghost buyer total */}
-              <div className="border border-orange-100 bg-orange-50 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs font-bold text-orange-700 bg-orange-100 px-2 py-0.5 rounded-full">Finding 3</span>
-                  <span className="text-sm font-semibold text-gray-800 flex-1">{ghostRate}% of eligible buyers never logged in within 7 days</span>
-                  <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">{loginAnalysis.ghostTotalMature.toLocaleString()} users</span>
-                </div>
-                <p className="text-xs text-gray-600">
-                  Across all mature cohorts, <strong>{loginAnalysis.ghostTotalMature.toLocaleString()}</strong> of <strong>{loginAnalysis.eligibleTotalMature.toLocaleString()}</strong> eligible buyers never logged in within 7 days. Users who don&apos;t log in within the first week are significantly less likely to ever activate — making Day 7 Login % the earliest leading indicator of churn.
-                </p>
+                <p className="text-[10px] text-gray-400 mt-2">Ghost % = eligible buyers in mature cohorts who never logged in · snapshot {new Date(loginAnalysis.weekRange.max + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}</p>
               </div>
 
             </div>
