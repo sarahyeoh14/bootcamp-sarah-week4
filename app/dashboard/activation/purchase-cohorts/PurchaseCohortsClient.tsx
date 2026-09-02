@@ -199,15 +199,15 @@ const METRIC_DEFS: Record<Tab, { key: string; label: string; color: string; defi
   refund: [
     {
       key: 'refundRate',
-      label: 'Refund Rate (15-day)',
+      label: 'Refund Rate',
       color: '#ef4444',
-      definition: 'The share of buyers who cancelled within 15 days of purchase. Used as a proxy for refunds — only shown for cohorts where the full 15-day window has passed (mature).',
+      definition: 'The share of buyers who received a refund within 15 days of purchase, based on actual refund_timestamp data. Only shown for mature cohorts (22+ days old) where the refund window is complete.',
     },
     {
       key: 'cancelRate',
-      label: 'Overall Cancel Rate',
+      label: 'Cancel Rate',
       color: '#f97316',
-      definition: 'The share of buyers who cancelled at any point within the data window. Includes late cancellations at end of subscription term.',
+      definition: 'The share of buyers who cancelled at any point. Includes early and late cancellations. Higher than refund rate as not all cancels result in refunds.',
     },
   ],
   ip: [
@@ -514,8 +514,8 @@ function RefundChart({ weeks, loading }: { weeks: RefundWeekRow[]; loading: bool
             <span className="font-bold text-indigo-500">{tooltip.week.total.toLocaleString()}</span>
           </div>
           {[
-            { label: 'Refund Rate (15d)', value: tooltip.week.refundRate, count: tooltip.week.refundCount, color: '#ef4444' },
-            { label: 'Cancel Rate (all)', value: tooltip.week.cancelRate, count: tooltip.week.cancelCount, color: '#f97316' },
+            { label: 'Refund Rate', value: tooltip.week.refundRate, count: tooltip.week.refundCount, color: '#ef4444' },
+            { label: 'Cancel Rate', value: tooltip.week.cancelRate, count: tooltip.week.cancelCount, color: '#f97316' },
           ].map(l => (
             <div key={l.label} className="flex items-center justify-between gap-3 py-0.5">
               <div className="flex items-center gap-1.5">
@@ -1553,12 +1553,12 @@ export default function PurchaseCohortsClient() {
             <div className="grid grid-cols-2 gap-4">
               {[
                 {
-                  label: 'Refund Rate (15d)', detail: 'Cancelled within 15 days', value: avgRefund4,
-                  delta: refundDelta, color: '#ef4444', lo: 3, hi: 1,
+                  label: 'Refund Rate', detail: 'Refunded within 15 days of purchase', value: avgRefund4,
+                  delta: refundDelta, color: '#ef4444', lo: 15, hi: 10,
                 },
                 {
-                  label: 'Overall Cancel Rate', detail: 'Cancelled at any point', value: avgCancel4,
-                  delta: null, color: '#f97316', lo: 40, hi: 20,
+                  label: 'Cancel Rate', detail: 'Cancelled at any point', value: avgCancel4,
+                  delta: null, color: '#f97316', lo: 50, hi: 30,
                 },
               ].map(c => {
                 const isDown = c.delta !== null && c.delta < 0;
@@ -1610,8 +1610,8 @@ export default function PurchaseCohortsClient() {
                 </div>
                 <div className="flex flex-wrap gap-4 items-center">
                   {[
-                    { label: 'Refund Rate (15d)', color: '#ef4444', dash: '' },
-                    { label: 'Cancel Rate (all)', color: '#f97316', dash: '6 3' },
+                    { label: 'Refund Rate', color: '#ef4444', dash: '' },
+                    { label: 'Cancel Rate', color: '#f97316', dash: '6 3' },
                   ].map(l => (
                     <div key={l.label} className="flex items-center gap-1.5 text-xs text-gray-600">
                       <svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke={l.color} strokeWidth="2.5" strokeDasharray={l.dash} /></svg>
@@ -1629,11 +1629,11 @@ export default function PurchaseCohortsClient() {
               </div>
             </div>
 
-            {/* Key finding — Not Applicable funnel */}
+            {/* Key finding — refund rate drivers */}
             <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
               <div className="px-5 py-4 border-b border-gray-100">
-                <h2 className="font-semibold text-gray-900">What&apos;s driving the refund rate up?</h2>
-                <p className="text-xs text-gray-500 mt-0.5">Root cause analysis · recent 8 mature weeks</p>
+                <h2 className="font-semibold text-gray-900">What&apos;s driving the refund rate up since Jul 27?</h2>
+                <p className="text-xs text-gray-500 mt-0.5">Actual refunds · Apr 21–Jul 20 vs Jul 27–Aug 10 · paying customers only (excl. Trial &amp; Not Applicable)</p>
               </div>
               <div className="p-5 space-y-4">
 
@@ -1642,35 +1642,36 @@ export default function PurchaseCohortsClient() {
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-xs font-bold text-red-700 bg-red-100 px-2 py-0.5 rounded-full">Finding 1</span>
                     <span className="text-sm font-semibold text-gray-800 flex-1">
-                      Quest subscription funnels are driving the increase — qomm +6.2pp, qaap +5.2pp
+                      Quest subscription funnels spiked — qomm +3.9pp, qaap +4.4pp since Jul 27
                     </span>
-                    <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">paying customers only</span>
+                    <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">12.7% → 13.1%</span>
                   </div>
                   <p className="text-xs text-gray-600 mb-3">
-                    Excluding trials and non-applicable orders, the overall early-cancel rate for <strong>paying customers is 13.3%</strong> (up +1.0pp). The increase is concentrated in Quest subscription products — <strong>qomm_product rose +6.2pp</strong> to 17.8% and <strong>qaap_product rose +5.2pp</strong> to 13.6%. eb_product (Entrepreneurship &amp; AI) has the highest absolute rate at 19.8%, up +3.9pp. Large funnels like sums, tam, and du are flat or improving.
+                    Overall refund rate increased <strong>+0.4pp to 13.1%</strong> since July 27 (vs 12.7% before). The biggest rate jumps are in Quest subscription products: <strong>qomm_product +3.9pp to 17.5%</strong> and <strong>qaap_product +4.4pp to 15.1%</strong>. eb_product remains the highest absolute rate (17.3%) but is actually slightly improving (−1.0pp). Major funnels like sums (−2.3pp) and du (−1.7pp) are getting better.
                   </p>
                   <div className="overflow-x-auto -mx-1">
                     <table className="w-full text-xs">
                       <thead>
                         <tr className="text-gray-400 border-b border-red-100">
                           <th className="text-left pb-1.5 pl-1 font-medium">Funnel</th>
-                          <th className="text-right pb-1.5 font-medium">Buyers</th>
-                          <th className="text-right pb-1.5 font-medium">Early cancel rate</th>
-                          <th className="text-right pb-1.5 pr-1 font-medium">vs prev 8w</th>
+                          <th className="text-right pb-1.5 font-medium">Buyers (after)</th>
+                          <th className="text-right pb-1.5 font-medium">Refund rate</th>
+                          <th className="text-right pb-1.5 pr-1 font-medium">vs before Jul 27</th>
                         </tr>
                       </thead>
                       <tbody>
                         {[
-                          { name: 'eb_product',    n: 1410, rate: 19.8, delta: +3.9 },
-                          { name: 'qomm_product',  n: 409,  rate: 17.8, delta: +6.2 },
-                          { name: 'sb_product',    n: 189,  rate: 16.9, delta: +0.8 },
-                          { name: 'qaap_product',  n: 383,  rate: 13.6, delta: +5.2 },
-                          { name: 'du_product',    n: 916,  rate: 13.4, delta: -1.4 },
-                          { name: 'sums_product',  n: 1547, rate: 12.3, delta: -2.3 },
-                          { name: 'tam_product',   n: 1207, rate: 11.0, delta: -1.1 },
-                          { name: 'Not Applicable (New only)', n: 826, rate: 7.4, delta: -2.1 },
+                          { name: 'eb_product',    n: 741,  rate: 17.3, delta: -1.0 },
+                          { name: 'qomm_product',  n: 177,  rate: 17.5, delta: +3.9 },
+                          { name: 'sb_product',    n: 81,   rate: 14.8, delta: -1.2 },
+                          { name: 'qaap_product',  n: 166,  rate: 15.1, delta: +4.4 },
+                          { name: 'be_product',    n: 248,  rate: 14.1, delta: +2.4 },
+                          { name: 'tam_product',   n: 424,  rate: 13.0, delta: +1.9 },
+                          { name: 'du_product',    n: 511,  rate: 13.1, delta: -1.7 },
+                          { name: 'sums_product',  n: 925,  rate: 11.1, delta: -2.3 },
+                          { name: 'Not Applicable', n: 301, rate: 6.3,  delta: -2.3 },
                         ].map(p => {
-                          const rateColor = p.rate >= 18 ? '#dc2626' : p.rate >= 13 ? '#d97706' : '#059669';
+                          const rateColor = p.rate >= 17 ? '#dc2626' : p.rate >= 13 ? '#d97706' : '#059669';
                           const deltaColor = p.delta > 2 ? '#dc2626' : p.delta < -1 ? '#059669' : '#6b7280';
                           return (
                             <tr key={p.name} className="border-b border-red-50 last:border-0">
@@ -1686,40 +1687,40 @@ export default function PurchaseCohortsClient() {
                   </div>
                 </div>
 
-                {/* Finding 2 — Direct traffic spike */}
+                {/* Finding 2 — Direct and Email traffic spike */}
                 <div className="border border-amber-100 bg-amber-50 rounded-xl p-4">
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-xs font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">Finding 2</span>
                     <span className="text-sm font-semibold text-gray-800 flex-1">
-                      Direct traffic early-cancel rate spiked +7.9pp — Impact and Email also rising
+                      Direct and Email refund rates spiked — but Facebook (49% of buyers) is flat
                     </span>
-                    <span className="text-xs font-bold text-amber-700 bg-amber-100 border border-amber-200 px-2 py-0.5 rounded-full whitespace-nowrap">16.8% Direct</span>
+                    <span className="text-xs font-bold text-amber-700 bg-amber-100 border border-amber-200 px-2 py-0.5 rounded-full whitespace-nowrap">16% Direct</span>
                   </div>
                   <p className="text-xs text-gray-600 mb-3">
-                    Facebook and Google are flat (the majority of paid traffic). The fastest-rising sources are <strong>Direct (+7.9pp to 16.8%)</strong>, <strong>Impact (+4.8pp)</strong>, and <strong>General Email (+4.3pp)</strong> — suggesting affiliate and email campaigns are bringing in buyers with lower intent or mismatched expectations. <strong>App traffic is low and improving</strong> (4.7%, −1.4pp) — paying app buyers tend to be more committed.
+                    Facebook (49% of buyers) is essentially flat at 12.9% (−0.4pp) — the dominant channel is not the problem. The spikes are in smaller channels: <strong>General Email +4.8pp to 15.6%</strong> and <strong>Direct +4.3pp to 16%</strong>. Not Classified traffic (20% of buyers) is also slightly elevated at 14.9% (+0.7pp). <strong>App traffic remains low at 3.1%</strong> — paying app buyers are committed.
                   </p>
                   <div className="overflow-x-auto -mx-1">
                     <table className="w-full text-xs">
                       <thead>
                         <tr className="text-gray-400 border-b border-amber-100">
                           <th className="text-left pb-1.5 pl-1 font-medium">Traffic source</th>
-                          <th className="text-right pb-1.5 font-medium">Buyers</th>
-                          <th className="text-right pb-1.5 font-medium">Early cancel rate</th>
-                          <th className="text-right pb-1.5 pr-1 font-medium">vs prev 8w</th>
+                          <th className="text-right pb-1.5 font-medium">Buyers (after)</th>
+                          <th className="text-right pb-1.5 font-medium">Refund rate</th>
+                          <th className="text-right pb-1.5 pr-1 font-medium">vs before Jul 27</th>
                         </tr>
                       </thead>
                       <tbody>
                         {[
-                          { source: 'Direct',         n: 352,  rate: 16.8, delta: +7.9 },
-                          { source: 'General Email',  n: 176,  rate: 14.2, delta: +4.3 },
-                          { source: 'Impact',         n: 232,  rate: 13.8, delta: +4.8 },
-                          { source: 'Google',         n: 1270, rate: 13.4, delta: +1.4 },
-                          { source: 'Facebook',       n: 4149, rate: 13.5, delta: +0.5 },
-                          { source: 'Not Classified', n: 1559, rate: 13.9, delta: -0.9 },
-                          { source: 'App',            n: 338,  rate: 4.7,  delta: -1.4 },
+                          { source: 'Direct',         n: 150,  rate: 16.0, delta: +4.3 },
+                          { source: 'General Email',  n: 64,   rate: 15.6, delta: +4.8 },
+                          { source: 'Not Classified', n: 784,  rate: 14.9, delta: +0.7 },
+                          { source: 'Google',         n: 767,  rate: 13.2, delta: +0.6 },
+                          { source: 'Facebook',       n: 1942, rate: 12.9, delta: -0.4 },
+                          { source: 'Impact',         n: 92,   rate: 12.0, delta: -1.0 },
+                          { source: 'App',            n: 129,  rate: 3.1,  delta: +0.2 },
                         ].map(r => {
-                          const rateColor = r.rate >= 16 ? '#dc2626' : r.rate >= 13 ? '#d97706' : '#059669';
-                          const deltaColor = r.delta > 3 ? '#dc2626' : r.delta < -1 ? '#059669' : '#6b7280';
+                          const rateColor = r.rate >= 15 ? '#dc2626' : r.rate >= 13 ? '#d97706' : '#059669';
+                          const deltaColor = r.delta > 3 ? '#dc2626' : r.delta < -0.5 ? '#059669' : '#6b7280';
                           return (
                             <tr key={r.source} className="border-b border-amber-50 last:border-0">
                               <td className="py-1.5 pl-1 font-medium text-gray-700">{r.source}</td>
@@ -1763,13 +1764,13 @@ export default function PurchaseCohortsClient() {
                             <tr className="text-xs text-gray-400 uppercase tracking-wide border-b border-gray-100">
                               <th className="text-left px-4 py-2 font-medium">Segment</th>
                               <th className="text-right px-4 py-2 font-medium">Buyers</th>
-                              <th className="text-right px-4 py-2 font-medium text-red-500">Refund Rate (15d)</th>
-                              <th className="text-right px-4 py-2 font-medium text-orange-500">Cancel Rate (all)</th>
+                              <th className="text-right px-4 py-2 font-medium text-red-500">Refund Rate</th>
+                              <th className="text-right px-4 py-2 font-medium text-orange-500">Cancel Rate</th>
                             </tr>
                           </thead>
                           <tbody>
                             {section.rows.map(row => {
-                              const refundColor = row.refundRate <= 1 ? '#059669' : row.refundRate <= 3 ? '#d97706' : '#dc2626';
+                              const refundColor = row.refundRate <= 10 ? '#059669' : row.refundRate <= 15 ? '#d97706' : '#dc2626';
                               const cancelColor = row.cancelRate <= 20 ? '#059669' : row.cancelRate <= 35 ? '#d97706' : '#dc2626';
                               return (
                                 <tr key={row.label} className="border-b border-gray-50 hover:bg-gray-50">

@@ -18,7 +18,7 @@ import { getDb } from './db';
 const DATA_PATH = path.join(process.cwd(), 'data', 'l52weeks_product_metric_v7.json');
 
 // Schema version — bump whenever the table structure changes so the DB is rebuilt.
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -72,6 +72,7 @@ function ensureTable(): void {
       has_funnel_quest INTEGER DEFAULT 0,
       product_name TEXT,
       days_to_cancel INTEGER,
+      days_to_refund INTEGER,
       is_involuntary_churn INTEGER DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_pc_week ON purchase_cohorts(purchase_week);
@@ -165,8 +166,8 @@ export function seedPurchaseMetricsIfNeeded(): void {
         has_discount, order_amount, product_funnel,
         is_mc_funnel, is_vsl_funnel, is_first_order,
         order_type, place_in_funnel, product_type, has_funnel_quest,
-        product_name, days_to_cancel, is_involuntary_churn
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        product_name, days_to_cancel, days_to_refund, is_involuntary_churn
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
 
     const insertAll = db.transaction(() => {
@@ -216,6 +217,17 @@ export function seedPurchaseMetricsIfNeeded(): void {
           const diff = Math.round((cancelMs - purchaseMs) / (1000 * 60 * 60 * 24));
           if (!isNaN(diff) && diff >= 0) daysToCancel = diff;
         }
+
+        // Compute days from purchase to refund (actual refund event)
+        let daysToRefund: number | null = null;
+        const rawRefundAt = r.refund_timestamp as string | undefined;
+        if (rawRefundAt) {
+          const refundMs = new Date(rawRefundAt.replace(' UTC', 'Z')).getTime();
+          const purchaseMs = new Date(pDate + 'T00:00:00Z').getTime();
+          const diff = Math.round((refundMs - purchaseMs) / (1000 * 60 * 60 * 24));
+          if (!isNaN(diff) && diff >= 0) daysToRefund = diff;
+        }
+
         const isInvoluntaryChurn = r.is_involuntary_churn === true || r.is_involuntary_churn === 'true' ? 1 : 0;
 
         insert.run(
@@ -225,7 +237,7 @@ export function seedPurchaseMetricsIfNeeded(): void {
           hasDiscount, isNaN(orderAmt ?? NaN) ? null : orderAmt,
           funnel, isMC, isVSL, isFirst,
           orderType, placeInFunnel, productType, hasFunnelQuest,
-          productName, daysToCancel, isInvoluntaryChurn
+          productName, daysToCancel, daysToRefund, isInvoluntaryChurn
         );
       }
     });
@@ -1162,11 +1174,11 @@ export interface RefundWeekRow {
   week: string;
   weekLabel: string;
   total: number;
-  refundCount: number;   // cancelled within 30 days
-  cancelCount: number;   // cancelled at any point
+  refundCount: number;   // actual refunds (refund_timestamp IS NOT NULL, within 15d window)
+  cancelCount: number;   // cancelled at any point (canceled_at IS NOT NULL)
   refundRate: number;    // refundCount / total * 100
   cancelRate: number;    // cancelCount / total * 100
-  isMature: boolean;     // cohort is 30+ days old (refund window complete)
+  isMature: boolean;     // cohort is 22+ days old (refund window complete)
 }
 
 export function getRefundMetrics(filters: PurchaseFilters = {}): RefundWeekRow[] {
@@ -1179,13 +1191,13 @@ export function getRefundMetrics(filters: PurchaseFilters = {}): RefundWeekRow[]
     SELECT
       purchase_week as week,
       COUNT(DISTINCT user_id) as total,
-      COUNT(DISTINCT CASE WHEN days_to_cancel IS NOT NULL AND days_to_cancel <= 15 THEN user_id END) as refund30,
+      COUNT(DISTINCT CASE WHEN days_to_refund IS NOT NULL AND days_to_refund <= 15 THEN user_id END) as refunded,
       COUNT(DISTINCT CASE WHEN days_to_cancel IS NOT NULL THEN user_id END) as cancelled
     FROM purchase_cohorts
     ${refundWhere}
     GROUP BY purchase_week
     ORDER BY purchase_week ASC
-  `).all(...params) as { week: string; total: number; refund30: number; cancelled: number }[];
+  `).all(...params) as { week: string; total: number; refunded: number; cancelled: number }[];
 
   return rows.map(r => {
     const daysOld = Math.floor(
@@ -1197,9 +1209,9 @@ export function getRefundMetrics(filters: PurchaseFilters = {}): RefundWeekRow[]
         month: 'short', day: 'numeric', timeZone: 'UTC',
       }),
       total: r.total,
-      refundCount: r.refund30 ?? 0,
+      refundCount: r.refunded ?? 0,
       cancelCount: r.cancelled ?? 0,
-      refundRate: r.total > 0 ? Math.round((r.refund30 ?? 0) / r.total * 1000) / 10 : 0,
+      refundRate: r.total > 0 ? Math.round((r.refunded ?? 0) / r.total * 1000) / 10 : 0,
       cancelRate: r.total > 0 ? Math.round((r.cancelled ?? 0) / r.total * 1000) / 10 : 0,
       isMature: daysOld >= 22,
     };
@@ -1264,19 +1276,19 @@ export function getRefundBreakdown(filters: PurchaseFilters = {}): RefundBreakdo
       SELECT
         ${groupCol} as label,
         COUNT(DISTINCT user_id) as total,
-        COUNT(DISTINCT CASE WHEN days_to_cancel IS NOT NULL AND days_to_cancel <= 15 THEN user_id END) as refund30,
+        COUNT(DISTINCT CASE WHEN days_to_refund IS NOT NULL AND days_to_refund <= 15 THEN user_id END) as refunded,
         COUNT(DISTINCT CASE WHEN days_to_cancel IS NOT NULL THEN user_id END) as cancelled
       FROM purchase_cohorts
       ${clause} AND ${groupCol} IS NOT NULL
       GROUP BY ${groupCol}
       ORDER BY total DESC
-    `).all(...p) as { label: string; total: number; refund30: number; cancelled: number }[];
+    `).all(...p) as { label: string; total: number; refunded: number; cancelled: number }[];
     return rows
       .filter(r => r.total >= 50)
       .map(r => ({
         label: r.label,
         total: r.total,
-        refundRate: r.total > 0 ? Math.round((r.refund30 ?? 0) / r.total * 1000) / 10 : 0,
+        refundRate: r.total > 0 ? Math.round((r.refunded ?? 0) / r.total * 1000) / 10 : 0,
         cancelRate: r.total > 0 ? Math.round((r.cancelled ?? 0) / r.total * 1000) / 10 : 0,
       }));
   }
