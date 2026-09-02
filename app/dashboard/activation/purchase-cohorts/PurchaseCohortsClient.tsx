@@ -152,7 +152,7 @@ interface LoginAnalysis {
   day0Decline: Day0Decline | null;
 }
 
-type Tab = 'ip' | 'engage';
+type Tab = 'ip' | 'engage' | 'refund';
 
 const PRICE_BUCKETS = [
   { label: 'Any',        min: undefined, max: undefined },
@@ -166,9 +166,50 @@ const PRICE_BUCKETS = [
 const TABS: { id: Tab; label: string; owner: string }[] = [
   { id: 'ip',     label: 'IP Team',     owner: 'Immediate Product' },
   { id: 'engage', label: 'Engage Team', owner: 'Engagement & Activation' },
+  { id: 'refund', label: 'Refund Rate', owner: 'Finance & Retention' },
 ];
 
+interface RefundWeekRow {
+  week: string;
+  weekLabel: string;
+  total: number;
+  refundCount: number;
+  cancelCount: number;
+  refundRate: number;
+  cancelRate: number;
+  isMature: boolean;
+}
+
+interface RefundSegment {
+  label: string;
+  total: number;
+  refundRate: number;
+  cancelRate: number;
+}
+
+interface RefundBreakdown {
+  weekRange: { min: string; max: string };
+  byPaymentFreq: RefundSegment[];
+  byProduct: RefundSegment[];
+  byOrderType: RefundSegment[];
+  involuntaryRate: number;
+}
+
 const METRIC_DEFS: Record<Tab, { key: string; label: string; color: string; definition: string; denominator?: string }[]> = {
+  refund: [
+    {
+      key: 'refundRate',
+      label: 'Refund Rate (15-day)',
+      color: '#ef4444',
+      definition: 'The share of buyers who cancelled within 15 days of purchase. Used as a proxy for refunds — only shown for cohorts where the full 15-day window has passed (mature).',
+    },
+    {
+      key: 'cancelRate',
+      label: 'Overall Cancel Rate',
+      color: '#f97316',
+      definition: 'The share of buyers who cancelled at any point within the data window. Includes late cancellations at end of subscription term.',
+    },
+  ],
   ip: [
     {
       key: 'day0',
@@ -590,6 +631,8 @@ export default function PurchaseCohortsClient() {
   const [dropoff, setDropoff] = useState<DropoffAnalysis | null>(null);
   const [loginAnalysis, setLoginAnalysis] = useState<LoginAnalysis | null>(null);
   const [segments, setSegments] = useState<SegmentGroup[]>([]);
+  const [refundWeeks, setRefundWeeks] = useState<RefundWeekRow[]>([]);
+  const [refundBreakdown, setRefundBreakdown] = useState<RefundBreakdown | null>(null);
   const [snapshotDate, setSnapshotDate] = useState('');
   const [segmentWeeks, setSegmentWeeks] = useState(4);
   const [fromWeek, setFromWeek] = useState('');
@@ -637,6 +680,7 @@ export default function PurchaseCohortsClient() {
       if (includeOptions) params.set('include_options', '1');
       params.set('include_dropoff', '1');
       params.set('include_segments', '1');
+      params.set('include_refund', '1');
       params.set('segment_weeks', String(segmentWeeks));
 
       const res = await fetch(`/api/purchase-cohorts?${params}`);
@@ -647,6 +691,8 @@ export default function PurchaseCohortsClient() {
       setDropoff(data.dropoff ?? null);
       setLoginAnalysis(data.loginAnalysis ?? null);
       setSegments(data.segments ?? []);
+      setRefundWeeks(data.refundWeeks ?? []);
+      setRefundBreakdown(data.refundBreakdown ?? null);
       if (data.snapshotDate) setSnapshotDate(data.snapshotDate);
     } catch {
       setError('Failed to load data');
@@ -697,6 +743,7 @@ export default function PurchaseCohortsClient() {
 
   // Per-tab config
   const isIP = activeTab === 'ip';
+  const isRefund = activeTab === 'refund';
 
   const lines = isIP ? IP_LINES : ENGAGE_LINES;
   const cards = isIP
@@ -704,10 +751,12 @@ export default function PurchaseCohortsClient() {
         { key: 'day0LoginPct' as const, label: 'Day 0 Login',  detail: 'Same-day login',   color: '#8b5cf6', lo: 50, hi: 70 },
         { key: 'day7LoginPct' as const, label: 'Day 7 Login',  detail: 'Login within 7d',  color: '#06b6d4', lo: 60, hi: 80 },
       ]
-    : [
+    : activeTab === 'engage'
+    ? [
         { key: 'day15ActPct' as const, label: 'Day 15 Activation', detail: 'Activated within 15d', color: '#10b981', lo: 30, hi: 50 },
         { key: 'day30ActPct' as const, label: 'Day 30 Activation', detail: 'Activated within 30d', color: '#f59e0b', lo: 35, hi: 55 },
-      ];
+      ]
+    : [];
 
   if (error) return <div className="p-6 text-red-500">{error}</div>;
 
@@ -849,8 +898,8 @@ export default function PurchaseCohortsClient() {
         </div>
       </div>
 
-      {/* Summary cards */}
-      {!loading && recent4.length > 0 && (
+      {/* Summary cards — IP and Engage tabs only */}
+      {!isRefund && !loading && recent4.length > 0 && (
         <div className="grid grid-cols-2 gap-4">
           {cards.map(c => {
             const val = weekAvg(recent4, c.key);
@@ -893,8 +942,8 @@ export default function PurchaseCohortsClient() {
         </div>
       )}
 
-      {/* Trend chart */}
-      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      {/* Trend chart — IP and Engage tabs only */}
+      {!isRefund && <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between flex-wrap gap-3">
           <div>
             <h2 className="font-semibold text-gray-900">
@@ -927,9 +976,10 @@ export default function PurchaseCohortsClient() {
         <div className="px-5 py-4">
           <TrendChart weeks={viewedWeeks} lines={lines} loading={loading} />
         </div>
-      </div>
+      </div>}
 
-      {/* Segment comparison table */}
+      {/* Segment comparison table — IP and Engage tabs only */}
+      {!isRefund &&
       <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between flex-wrap gap-3">
           <div>
@@ -957,7 +1007,7 @@ export default function PurchaseCohortsClient() {
           cols={isIP ? ['day0LoginPct', 'day7LoginPct'] : ['day7LoginPct', 'day15ActPct']}
           loading={loading}
         />
-      </div>
+      </div>}
 
       {/* Who's not logging in? — IP Team only */}
       {isIP && loginAnalysis && !loading && (() => {
@@ -1348,8 +1398,226 @@ export default function PurchaseCohortsClient() {
         );
       })()}
 
+      {/* Refund Rate tab content */}
+      {isRefund && !loading && (() => {
+        const matureRefundWeeks = refundWeeks.filter(w => w.isMature);
+        const viewedRefundWeeks = refundWeeks.filter(w =>
+          (!fromWeek || w.week >= fromWeek) && (!toWeek || w.week <= toWeek)
+        );
+        const recent4r = matureRefundWeeks.slice(-4);
+        const prev4r = matureRefundWeeks.slice(-8, -4);
+        const avgRefund4 = recent4r.length > 0 ? Math.round(recent4r.reduce((s, w) => s + w.refundRate, 0) / recent4r.length * 10) / 10 : null;
+        const avgRefundPrev = prev4r.length > 0 ? Math.round(prev4r.reduce((s, w) => s + w.refundRate, 0) / prev4r.length * 10) / 10 : null;
+        const avgCancel4 = recent4r.length > 0 ? Math.round(recent4r.reduce((s, w) => s + w.cancelRate, 0) / recent4r.length * 10) / 10 : null;
+        const refundDelta = avgRefund4 !== null && avgRefundPrev !== null ? Math.round((avgRefund4 - avgRefundPrev) * 10) / 10 : null;
+
+        // Simple SVG line chart for refund rate
+        const chartWeeks = viewedRefundWeeks;
+        const n = chartWeeks.length;
+        const PAD = { top: 16, right: 64, bottom: 48, left: 44 };
+        const H = 220;
+        const W = 760;
+        const innerW = W - PAD.left - PAD.right;
+        const innerH = H - PAD.top - PAD.bottom;
+        const maxRate = Math.max(...chartWeeks.map(w => Math.max(w.refundRate, w.cancelRate)), 5);
+        const yMax = Math.ceil(maxRate / 5) * 5;
+        const xOf = (i: number) => PAD.left + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+        const yOf = (v: number) => PAD.top + innerH - (v / yMax) * innerH;
+        const yTicks = Array.from({ length: 5 }, (_, i) => Math.round(yMax / 4 * i));
+        const step = Math.max(1, Math.round(n / 7));
+        const xLabels = chartWeeks.map((w, i) => ({ i, label: w.weekLabel })).filter((_, i) => i % step === 0 || i === n - 1);
+        const pathFor = (key: 'refundRate' | 'cancelRate') =>
+          n === 0 ? '' : chartWeeks.map((w, i) => `${i === 0 ? 'M' : 'L'}${xOf(i).toFixed(1)},${yOf(w[key]).toFixed(1)}`).join(' ');
+        const maxVol = Math.max(...chartWeeks.map(w => w.total), 1);
+        const barW = Math.max(3, Math.round(innerW / Math.max(n, 1)) - 3);
+
+        return (
+          <>
+            {/* Summary cards */}
+            <div className="grid grid-cols-2 gap-4">
+              {[
+                {
+                  label: 'Refund Rate (15d)', detail: 'Cancelled within 15 days', value: avgRefund4,
+                  delta: refundDelta, color: '#ef4444', lo: 3, hi: 1,
+                },
+                {
+                  label: 'Overall Cancel Rate', detail: 'Cancelled at any point', value: avgCancel4,
+                  delta: null, color: '#f97316', lo: 40, hi: 20,
+                },
+              ].map(c => {
+                const isDown = c.delta !== null && c.delta < 0;
+                const isUp   = c.delta !== null && c.delta > 0;
+                // For refund: lower is better
+                const valColor = c.value === null ? 'text-gray-300'
+                  : c.value <= c.hi ? 'text-emerald-700 font-bold'
+                  : c.value <= c.lo ? 'text-amber-600 font-semibold'
+                  : 'text-red-500 font-semibold';
+                return (
+                  <div key={c.label} className="bg-white border border-gray-200 rounded-xl p-5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="w-3 h-1 rounded-full inline-block" style={{ backgroundColor: c.color }} />
+                      <span className="text-xs text-gray-500">{c.detail}</span>
+                    </div>
+                    <div className="flex items-end gap-3">
+                      <div className={`text-3xl ${valColor}`}>{c.value !== null ? `${c.value}%` : '—'}</div>
+                      {c.delta !== null && (
+                        <div className={`flex items-center gap-0.5 text-sm font-semibold mb-1 ${isDown ? 'text-emerald-600' : isUp ? 'text-red-500' : 'text-gray-400'}`}>
+                          {isDown ? (
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5l15 15m0 0V8.25m0 11.25H8.25" />
+                            </svg>
+                          ) : isUp ? (
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 19.5l15-15m0 0H8.25m11.25 0v11.25" />
+                            </svg>
+                          ) : null}
+                          {Math.abs(c.delta)}pp
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-sm font-medium text-gray-700 mt-1">{c.label}</div>
+                    <div className="text-xs text-gray-400 mt-0.5">Last 4 mature weeks avg{prev4r.length > 0 && c.delta !== null && ' · vs prev 4 weeks'}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Trend chart */}
+            <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-gray-100 flex items-start justify-between flex-wrap gap-3">
+                <div>
+                  <h2 className="font-semibold text-gray-900">Refund Rate — Weekly Trend</h2>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    By purchase cohort week · shaded = incomplete 15-day window
+                    {snapshotDate && <span className="ml-2 text-gray-400">· Data as of {new Date(snapshotDate + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}</span>}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-4 items-center">
+                  {[
+                    { label: 'Refund Rate (15d)', color: '#ef4444', dash: '' },
+                    { label: 'Cancel Rate (all)', color: '#f97316', dash: '6 3' },
+                  ].map(l => (
+                    <div key={l.label} className="flex items-center gap-1.5 text-xs text-gray-600">
+                      <svg width="20" height="8"><line x1="0" y1="4" x2="20" y2="4" stroke={l.color} strokeWidth="2.5" strokeDasharray={l.dash} /></svg>
+                      {l.label}
+                    </div>
+                  ))}
+                  <div className="flex items-center gap-1.5 text-xs text-gray-400">
+                    <span className="w-3 h-3 rounded-sm inline-block bg-red-50 border border-red-100" />
+                    Immature
+                  </div>
+                </div>
+              </div>
+              <div className="px-5 py-4">
+                {n === 0 ? (
+                  <div className="h-[220px] flex items-center justify-center text-sm text-gray-400">No data</div>
+                ) : (
+                  <svg width={W} height={H} className="w-full">
+                    {/* Grid */}
+                    {yTicks.map(v => (
+                      <g key={v}>
+                        <line x1={PAD.left} y1={yOf(v)} x2={W - PAD.right} y2={yOf(v)} stroke="#f3f4f6" strokeWidth={1} />
+                        <text x={PAD.left - 6} y={yOf(v) + 4} fontSize={10} fill="#9ca3af" textAnchor="end">{v}%</text>
+                      </g>
+                    ))}
+                    {/* Right Y-axis — cohort size */}
+                    {(() => {
+                      const RX = W - PAD.right;
+                      const rightYOf = (v: number) => PAD.top + innerH - (v / maxVol) * innerH;
+                      const rightTicks = [0, Math.round(maxVol / 2), maxVol];
+                      const fmtCount = (v: number) => v >= 1000 ? `${+(v / 1000).toFixed(1)}k` : String(v);
+                      return <>
+                        <line x1={RX} y1={PAD.top} x2={RX} y2={PAD.top + innerH} stroke="#e0e7ff" strokeWidth={1} />
+                        {rightTicks.map(v => (
+                          <g key={v}>
+                            <line x1={RX} y1={rightYOf(v)} x2={RX + 4} y2={rightYOf(v)} stroke="#818cf8" strokeWidth={1} />
+                            <text x={RX + 7} y={rightYOf(v) + 4} fontSize={10} fill="#6366f1" textAnchor="start">{fmtCount(v)}</text>
+                          </g>
+                        ))}
+                        <text x={RX + 7} y={PAD.top - 4} fontSize={9} fill="#a5b4fc" textAnchor="start">users</text>
+                        {/* Volume bars */}
+                        {chartWeeks.map((w, i) => {
+                          const bh = Math.max(1, (w.total / maxVol) * innerH);
+                          return <rect key={i} x={xOf(i) - barW / 2} y={PAD.top + innerH - bh} width={barW} height={bh} fill="#c7d2fe" opacity={0.5} rx={1.5} />;
+                        })}
+                      </>;
+                    })()}
+                    {/* Immature shading */}
+                    {(() => {
+                      const fi = chartWeeks.findIndex(w => !w.isMature);
+                      return fi >= 0 ? <rect x={xOf(fi)} y={PAD.top} width={W - PAD.right - xOf(fi)} height={innerH} fill="#fef2f2" opacity={0.6} /> : null;
+                    })()}
+                    {/* X labels */}
+                    {xLabels.map(({ i, label }) => (
+                      <text key={i} x={xOf(i)} y={H - 8} fontSize={10} fill="#9ca3af" textAnchor="middle">{label}</text>
+                    ))}
+                    {/* Lines */}
+                    <path d={pathFor('cancelRate')} fill="none" stroke="#f97316" strokeWidth={2.5} strokeDasharray="6 3" strokeLinejoin="round" strokeLinecap="round" />
+                    <path d={pathFor('refundRate')} fill="none" stroke="#ef4444" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+                  </svg>
+                )}
+              </div>
+            </div>
+
+            {/* Breakdown table */}
+            {refundBreakdown && (
+              <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+                <div className="px-5 py-4 border-b border-gray-100">
+                  <h2 className="font-semibold text-gray-900">Refund Rate by Segment</h2>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Mature cohorts from recent 8 weeks · {new Date(refundBreakdown.weekRange.min + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })} – {new Date(refundBreakdown.weekRange.max + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}
+                    {refundBreakdown.involuntaryRate > 0 && (
+                      <span className="ml-2 text-amber-600 font-medium">· {refundBreakdown.involuntaryRate}% of cancellations are involuntary churn</span>
+                    )}
+                  </p>
+                </div>
+                <div className="p-5 space-y-6">
+                  {[
+                    { title: 'By Payment Frequency', rows: refundBreakdown.byPaymentFreq },
+                    { title: 'By Order Type', rows: refundBreakdown.byOrderType },
+                    { title: 'By Product (top 8)', rows: refundBreakdown.byProduct },
+                  ].filter(s => s.rows.length > 0).map(section => (
+                    <div key={section.title}>
+                      <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">{section.title}</p>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-xs text-gray-400 uppercase tracking-wide border-b border-gray-100">
+                              <th className="text-left px-4 py-2 font-medium">Segment</th>
+                              <th className="text-right px-4 py-2 font-medium">Buyers</th>
+                              <th className="text-right px-4 py-2 font-medium text-red-500">Refund Rate (15d)</th>
+                              <th className="text-right px-4 py-2 font-medium text-orange-500">Cancel Rate (all)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {section.rows.map(row => {
+                              const refundColor = row.refundRate <= 1 ? '#059669' : row.refundRate <= 3 ? '#d97706' : '#dc2626';
+                              const cancelColor = row.cancelRate <= 20 ? '#059669' : row.cancelRate <= 35 ? '#d97706' : '#dc2626';
+                              return (
+                                <tr key={row.label} className="border-b border-gray-50 hover:bg-gray-50">
+                                  <td className="px-4 py-2.5 font-medium text-gray-800 max-w-[200px]">
+                                    <div className="truncate" title={row.label}>{row.label}</div>
+                                  </td>
+                                  <td className="px-4 py-2.5 text-right text-gray-400 tabular-nums">{row.total.toLocaleString()}</td>
+                                  <td className="px-4 py-2.5 text-right tabular-nums font-semibold" style={{ color: refundColor }}>{row.refundRate}%</td>
+                                  <td className="px-4 py-2.5 text-right tabular-nums font-semibold" style={{ color: cancelColor }}>{row.cancelRate}%</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        );
+      })()}
+
       {/* What's driving the decline? — Engage Team only */}
-      {!isIP && dropoff && !loading && dropoff.topProductShifts.length > 0 && (() => {
+      {activeTab === 'engage' && dropoff && !loading && dropoff.topProductShifts.length > 0 && (() => {
         const manifesting = dropoff.topProductShifts.find(p => p.productName.toLowerCase().includes('manifesting'));
         const annualGap = Math.round(Math.abs(dropoff.monthlyCustomers.day15Rate - dropoff.annualCustomers.day15Rate) * 10) / 10;
         const overallDecline = dropoff.overall.prevDay15Rate !== null ? dropoff.overall.day15Rate - dropoff.overall.prevDay15Rate : 0;

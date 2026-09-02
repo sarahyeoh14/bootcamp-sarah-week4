@@ -6,6 +6,8 @@ import {
   getLoginDropoffAnalysis,
   getLoginAnalysis,
   getSegmentComparison,
+  getRefundMetrics,
+  getRefundBreakdown,
   SNAPSHOT_DATE,
   PurchaseFilters,
 } from '@/lib/purchase-metrics';
@@ -42,8 +44,10 @@ export async function GET(req: NextRequest) {
     const loginAnalysis = sp.get('include_dropoff') === '1' ? getLoginAnalysis(filters) : null;
     const segmentWeeks = Math.min(52, Math.max(1, parseInt(sp.get('segment_weeks') ?? '4', 10) || 4));
     const segments = sp.get('include_segments') === '1' ? getSegmentComparison(filters, segmentWeeks) : null;
+    const refundWeeks = sp.get('include_refund') === '1' ? getRefundMetrics(filters) : null;
+    const refundBreakdown = sp.get('include_refund') === '1' ? getRefundBreakdown(filters) : null;
 
-    return NextResponse.json({ weeks, options, dropoff, loginAnalysis, segments, snapshotDate: SNAPSHOT_DATE });
+    return NextResponse.json({ weeks, options, dropoff, loginAnalysis, segments, refundWeeks, refundBreakdown, snapshotDate: SNAPSHOT_DATE });
   } catch (e) {
     console.error('[api/purchase-cohorts]', e);
     return NextResponse.json({ error: 'Internal error' }, { status: 500 });

@@ -15,10 +15,10 @@ import path from 'path';
 import fs from 'fs';
 import { getDb } from './db';
 
-const DATA_PATH = path.join(process.cwd(), 'data', 'l52weeks_product_metric_v6.json');
+const DATA_PATH = path.join(process.cwd(), 'data', 'l52weeks_product_metric_v7.json');
 
 // Schema version — bump whenever the table structure changes so the DB is rebuilt.
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -70,7 +70,9 @@ function ensureTable(): void {
       place_in_funnel TEXT,
       product_type TEXT,
       has_funnel_quest INTEGER DEFAULT 0,
-      product_name TEXT
+      product_name TEXT,
+      days_to_cancel INTEGER,
+      is_involuntary_churn INTEGER DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_pc_week ON purchase_cohorts(purchase_week);
     CREATE INDEX IF NOT EXISTS idx_pc_user ON purchase_cohorts(user_id);
@@ -163,8 +165,8 @@ export function seedPurchaseMetricsIfNeeded(): void {
         has_discount, order_amount, product_funnel,
         is_mc_funnel, is_vsl_funnel, is_first_order,
         order_type, place_in_funnel, product_type, has_funnel_quest,
-        product_name
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        product_name, days_to_cancel, is_involuntary_churn
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
 
     const insertAll = db.transaction(() => {
@@ -205,6 +207,17 @@ export function seedPurchaseMetricsIfNeeded(): void {
         const hasFunnelQuest = r._has_quest ? 1 : 0;
         const productName = (r.product_name as string) || null;
 
+        // Compute days from purchase to cancellation
+        let daysToCancel: number | null = null;
+        const rawCanceledAt = r.canceled_at as string | undefined;
+        if (rawCanceledAt) {
+          const cancelMs = new Date(rawCanceledAt.replace(' UTC', 'Z')).getTime();
+          const purchaseMs = new Date(pDate + 'T00:00:00Z').getTime();
+          const diff = Math.round((cancelMs - purchaseMs) / (1000 * 60 * 60 * 24));
+          if (!isNaN(diff) && diff >= 0) daysToCancel = diff;
+        }
+        const isInvoluntaryChurn = r.is_involuntary_churn === true || r.is_involuntary_churn === 'true' ? 1 : 0;
+
         insert.run(
           recordId, userId, week, pDate,
           loginVal, actVal,
@@ -212,7 +225,7 @@ export function seedPurchaseMetricsIfNeeded(): void {
           hasDiscount, isNaN(orderAmt ?? NaN) ? null : orderAmt,
           funnel, isMC, isVSL, isFirst,
           orderType, placeInFunnel, productType, hasFunnelQuest,
-          productName
+          productName, daysToCancel, isInvoluntaryChurn
         );
       }
     });
@@ -339,7 +352,7 @@ export interface WeeklyMetricRow {
   isMature7: boolean;
 }
 
-export const SNAPSHOT_DATE = '2026-08-28';
+export const SNAPSHOT_DATE = '2026-09-01';
 
 export function getWeeklyMetrics(filters: PurchaseFilters = {}): WeeklyMetricRow[] {
   const db = getDb();
@@ -1138,5 +1151,151 @@ export function getLoginDropoffAnalysis(filters: PurchaseFilters = {}): DropoffA
     problemSegment:    buildSegmentRate(`is_mc_funnel = 1 AND has_funnel_quest = 0`),
     bestSegment:       buildSegmentRate(`is_mc_funnel = 0 AND has_funnel_quest = 1`),
     topProductShifts,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Refund Rate — weekly cancellation-within-30d rate by purchase cohort
+// ---------------------------------------------------------------------------
+
+export interface RefundWeekRow {
+  week: string;
+  weekLabel: string;
+  total: number;
+  refundCount: number;   // cancelled within 30 days
+  cancelCount: number;   // cancelled at any point
+  refundRate: number;    // refundCount / total * 100
+  cancelRate: number;    // cancelCount / total * 100
+  isMature: boolean;     // cohort is 30+ days old (refund window complete)
+}
+
+export function getRefundMetrics(filters: PurchaseFilters = {}): RefundWeekRow[] {
+  const db = getDb();
+  const { where, params } = buildWhere(filters);
+
+  const rows = db.prepare(`
+    SELECT
+      purchase_week as week,
+      COUNT(DISTINCT user_id) as total,
+      COUNT(DISTINCT CASE WHEN days_to_cancel IS NOT NULL AND days_to_cancel <= 15 THEN user_id END) as refund30,
+      COUNT(DISTINCT CASE WHEN days_to_cancel IS NOT NULL THEN user_id END) as cancelled
+    FROM purchase_cohorts
+    ${where}
+    GROUP BY purchase_week
+    ORDER BY purchase_week ASC
+  `).all(...params) as { week: string; total: number; refund30: number; cancelled: number }[];
+
+  return rows.map(r => {
+    const daysOld = Math.floor(
+      (new Date(SNAPSHOT_DATE).getTime() - new Date(r.week).getTime()) / (1000 * 60 * 60 * 24)
+    );
+    return {
+      week: r.week,
+      weekLabel: new Date(r.week + 'T00:00:00Z').toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric', timeZone: 'UTC',
+      }),
+      total: r.total,
+      refundCount: r.refund30 ?? 0,
+      cancelCount: r.cancelled ?? 0,
+      refundRate: r.total > 0 ? Math.round((r.refund30 ?? 0) / r.total * 1000) / 10 : 0,
+      cancelRate: r.total > 0 ? Math.round((r.cancelled ?? 0) / r.total * 1000) / 10 : 0,
+      isMature: daysOld >= 22,
+    };
+  });
+}
+
+export interface RefundSegment {
+  label: string;
+  total: number;
+  refundRate: number;
+  cancelRate: number;
+}
+
+export interface RefundBreakdown {
+  weekRange: { min: string; max: string };
+  byPaymentFreq: RefundSegment[];
+  byProduct: RefundSegment[];
+  byOrderType: RefundSegment[];
+  involuntaryRate: number;  // % of all cancellations that are involuntary churn
+}
+
+export function getRefundBreakdown(filters: PurchaseFilters = {}): RefundBreakdown {
+  const db = getDb();
+  const { where, params } = buildWhere(filters);
+
+  // Use the most recent 8 complete weeks
+  const completedCutoff = new Date(SNAPSHOT_DATE);
+  completedCutoff.setUTCDate(completedCutoff.getUTCDate() - 7);
+  const cutoffStr = completedCutoff.toISOString().substring(0, 10);
+
+  const windowRows = db.prepare(
+    `SELECT DISTINCT purchase_week FROM purchase_cohorts WHERE purchase_week <= ? ORDER BY purchase_week DESC LIMIT 8`
+  ).all(cutoffStr) as { purchase_week: string }[];
+  if (windowRows.length === 0) return { weekRange: { min: '', max: '' }, byPaymentFreq: [], byProduct: [], byOrderType: [], involuntaryRate: 0 };
+
+  const maxWeek = windowRows[0].purchase_week;
+  const minWeek = windowRows[windowRows.length - 1].purchase_week;
+
+  // Only use mature weeks (30+ days old) so the refund window is complete
+  const matureWeeks = windowRows.filter(r => {
+    const daysOld = Math.floor((new Date(SNAPSHOT_DATE).getTime() - new Date(r.purchase_week).getTime()) / (1000 * 60 * 60 * 24));
+    return daysOld >= 22;
+  }).map(r => r.purchase_week);
+
+  if (matureWeeks.length === 0) return { weekRange: { min: minWeek, max: maxWeek }, byPaymentFreq: [], byProduct: [], byOrderType: [], involuntaryRate: 0 };
+
+  const placeholders = matureWeeks.map(() => '?').join(',');
+  const windowFilter = `purchase_week IN (${placeholders})`;
+
+  function buildWhere2(extra: string): { clause: string; p: unknown[] } {
+    const baseWhere = where.replace('WHERE ', '');
+    const parts = [windowFilter];
+    if (baseWhere) parts.push(baseWhere);
+    if (extra) parts.push(extra);
+    return { clause: 'WHERE ' + parts.join(' AND '), p: [...matureWeeks, ...params] };
+  }
+
+  function segmentQuery(groupCol: string, extraFilter = ''): RefundSegment[] {
+    const { clause, p } = buildWhere2(extraFilter);
+    const rows = db.prepare(`
+      SELECT
+        ${groupCol} as label,
+        COUNT(DISTINCT user_id) as total,
+        COUNT(DISTINCT CASE WHEN days_to_cancel IS NOT NULL AND days_to_cancel <= 15 THEN user_id END) as refund30,
+        COUNT(DISTINCT CASE WHEN days_to_cancel IS NOT NULL THEN user_id END) as cancelled
+      FROM purchase_cohorts
+      ${clause} AND ${groupCol} IS NOT NULL
+      GROUP BY ${groupCol}
+      ORDER BY total DESC
+    `).all(...p) as { label: string; total: number; refund30: number; cancelled: number }[];
+    return rows
+      .filter(r => r.total >= 50)
+      .map(r => ({
+        label: r.label,
+        total: r.total,
+        refundRate: r.total > 0 ? Math.round((r.refund30 ?? 0) / r.total * 1000) / 10 : 0,
+        cancelRate: r.total > 0 ? Math.round((r.cancelled ?? 0) / r.total * 1000) / 10 : 0,
+      }));
+  }
+
+  // Involuntary churn rate — % of all cancellations (any window) that are involuntary
+  const { clause: invClause, p: invP } = buildWhere2('');
+  const invRow = db.prepare(`
+    SELECT
+      COUNT(DISTINCT CASE WHEN days_to_cancel IS NOT NULL THEN user_id END) as total_cancelled,
+      COUNT(DISTINCT CASE WHEN days_to_cancel IS NOT NULL AND is_involuntary_churn = 1 THEN user_id END) as involuntary
+    FROM purchase_cohorts ${invClause}
+  `).get(...invP) as { total_cancelled: number; involuntary: number } | undefined;
+
+  const involuntaryRate = invRow && invRow.total_cancelled > 0
+    ? Math.round(invRow.involuntary / invRow.total_cancelled * 1000) / 10
+    : 0;
+
+  return {
+    weekRange: { min: minWeek, max: maxWeek },
+    byPaymentFreq: segmentQuery('payment_frequency'),
+    byProduct: segmentQuery('product_name').slice(0, 8),
+    byOrderType: segmentQuery('order_type'),
+    involuntaryRate,
   };
 }
