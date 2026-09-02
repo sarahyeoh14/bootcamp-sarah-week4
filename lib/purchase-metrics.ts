@@ -1172,6 +1172,8 @@ export interface RefundWeekRow {
 export function getRefundMetrics(filters: PurchaseFilters = {}): RefundWeekRow[] {
   const db = getDb();
   const { where, params } = buildWhere(filters);
+  // Exclude Trial and Not Applicable — trials cannot be refunded (no charge), consistent with BQ refund logic
+  const refundWhere = where + ` AND order_type NOT IN ('Trial', 'Not Applicable')`;
 
   const rows = db.prepare(`
     SELECT
@@ -1180,7 +1182,7 @@ export function getRefundMetrics(filters: PurchaseFilters = {}): RefundWeekRow[]
       COUNT(DISTINCT CASE WHEN days_to_cancel IS NOT NULL AND days_to_cancel <= 15 THEN user_id END) as refund30,
       COUNT(DISTINCT CASE WHEN days_to_cancel IS NOT NULL THEN user_id END) as cancelled
     FROM purchase_cohorts
-    ${where}
+    ${refundWhere}
     GROUP BY purchase_week
     ORDER BY purchase_week ASC
   `).all(...params) as { week: string; total: number; refund30: number; cancelled: number }[];
@@ -1249,7 +1251,8 @@ export function getRefundBreakdown(filters: PurchaseFilters = {}): RefundBreakdo
 
   function buildWhere2(extra: string): { clause: string; p: unknown[] } {
     const baseWhere = where.replace('WHERE ', '');
-    const parts = [windowFilter];
+    // Exclude Trial and Not Applicable — trials cannot be refunded (no charge)
+    const parts = [windowFilter, `order_type NOT IN ('Trial', 'Not Applicable')`];
     if (baseWhere) parts.push(baseWhere);
     if (extra) parts.push(extra);
     return { clause: 'WHERE ' + parts.join(' AND '), p: [...matureWeeks, ...params] };

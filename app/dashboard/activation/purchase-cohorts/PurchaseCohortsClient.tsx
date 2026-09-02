@@ -402,6 +402,142 @@ function TrendChart({ weeks, lines, loading }: { weeks: WeekRow[]; lines: LineSp
 }
 
 // ---------------------------------------------------------------------------
+// Refund chart
+// ---------------------------------------------------------------------------
+
+function RefundChart({ weeks, loading }: { weeks: RefundWeekRow[]; loading: boolean }) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [chartW, setChartW] = useState(800);
+  const [tooltip, setTooltip] = useState<{ x: number; week: RefundWeekRow } | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver(e => setChartW(e[0].contentRect.width));
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  const PAD = { top: 16, right: 64, bottom: 48, left: 44 };
+  const H = 220;
+  const W = chartW;
+  const innerW = W - PAD.left - PAD.right;
+  const innerH = H - PAD.top - PAD.bottom;
+  const n = weeks.length;
+
+  const maxRate = Math.max(...weeks.map(w => Math.max(w.refundRate, w.cancelRate)), 5);
+  const yMax = Math.ceil(maxRate / 5) * 5;
+  const xOf = (i: number) => PAD.left + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+  const yOf = (v: number) => PAD.top + innerH - (v / yMax) * innerH;
+  const yTicks = Array.from({ length: 5 }, (_, i) => Math.round(yMax / 4 * i));
+  const step = Math.max(1, Math.round(n / 7));
+  const xLabels = weeks.map((w, i) => ({ i, label: w.weekLabel })).filter((_, i) => i % step === 0 || i === n - 1);
+  const pathFor = (key: 'refundRate' | 'cancelRate') =>
+    n === 0 ? '' : weeks.map((w, i) => `${i === 0 ? 'M' : 'L'}${xOf(i).toFixed(1)},${yOf(w[key]).toFixed(1)}`).join(' ');
+  const maxVol = Math.max(...weeks.map(w => w.total), 1);
+  const barW = Math.max(3, Math.round(innerW / Math.max(n, 1)) - 3);
+  const RX = W - PAD.right;
+  const rightYOf = (v: number) => PAD.top + innerH - (v / maxVol) * innerH;
+  const fmtCount = (v: number) => v >= 1000 ? `${+(v / 1000).toFixed(1)}k` : String(v);
+  const rightTicks = [0, Math.round(maxVol / 2), maxVol];
+
+  function handleMouseMove(e: React.MouseEvent<SVGSVGElement>) {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect || n === 0) return;
+    const mx = e.clientX - rect.left - PAD.left;
+    const idx = Math.max(0, Math.min(n - 1, Math.round((mx / innerW) * (n - 1))));
+    setTooltip({ x: xOf(idx), week: weeks[idx] });
+  }
+
+  return (
+    <div ref={containerRef} className="relative w-full">
+      {loading ? (
+        <div className="h-[220px] flex items-center justify-center">
+          <div className="w-7 h-7 rounded-full border-2 border-violet-200 border-t-violet-600 animate-spin" />
+        </div>
+      ) : n === 0 ? (
+        <div className="h-[220px] flex items-center justify-center text-sm text-gray-400">No data</div>
+      ) : (
+        <svg ref={svgRef} width={W} height={H} className="w-full"
+          onMouseMove={handleMouseMove} onMouseLeave={() => setTooltip(null)}>
+          {/* Grid */}
+          {yTicks.map(v => (
+            <g key={v}>
+              <line x1={PAD.left} y1={yOf(v)} x2={W - PAD.right} y2={yOf(v)} stroke="#f3f4f6" strokeWidth={1} />
+              <text x={PAD.left - 6} y={yOf(v) + 4} fontSize={10} fill="#9ca3af" textAnchor="end">{v}%</text>
+            </g>
+          ))}
+          {/* Right Y-axis */}
+          <line x1={RX} y1={PAD.top} x2={RX} y2={PAD.top + innerH} stroke="#e0e7ff" strokeWidth={1} />
+          {rightTicks.map(v => (
+            <g key={v}>
+              <line x1={RX} y1={rightYOf(v)} x2={RX + 4} y2={rightYOf(v)} stroke="#818cf8" strokeWidth={1} />
+              <text x={RX + 7} y={rightYOf(v) + 4} fontSize={10} fill="#6366f1" textAnchor="start">{fmtCount(v)}</text>
+            </g>
+          ))}
+          <text x={RX + 7} y={PAD.top - 4} fontSize={9} fill="#a5b4fc" textAnchor="start">users</text>
+          {/* Volume bars */}
+          {weeks.map((w, i) => {
+            const bh = Math.max(1, (w.total / maxVol) * innerH);
+            return <rect key={i} x={xOf(i) - barW / 2} y={PAD.top + innerH - bh} width={barW} height={bh} fill="#c7d2fe" opacity={0.5} rx={1.5} />;
+          })}
+          {/* Immature shading */}
+          {(() => { const fi = weeks.findIndex(w => !w.isMature); return fi >= 0 ? (
+            <rect x={xOf(fi)} y={PAD.top} width={W - PAD.right - xOf(fi)} height={innerH} fill="#fef2f2" opacity={0.6} />
+          ) : null; })()}
+          {/* X labels */}
+          {xLabels.map(({ i, label }) => (
+            <text key={i} x={xOf(i)} y={H - 8} fontSize={10} fill="#9ca3af" textAnchor="middle">{label}</text>
+          ))}
+          {/* Lines */}
+          <path d={pathFor('cancelRate')} fill="none" stroke="#f97316" strokeWidth={2.5} strokeDasharray="6 3" strokeLinejoin="round" strokeLinecap="round" />
+          <path d={pathFor('refundRate')} fill="none" stroke="#ef4444" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+          {/* Hover crosshair */}
+          {tooltip && <>
+            <line x1={tooltip.x} y1={PAD.top} x2={tooltip.x} y2={H - PAD.bottom} stroke="#e5e7eb" strokeWidth={1} strokeDasharray="4 2" />
+            <circle cx={tooltip.x} cy={yOf(tooltip.week.refundRate)} r={4} fill="#ef4444" stroke="white" strokeWidth={1.5} />
+            <circle cx={tooltip.x} cy={yOf(tooltip.week.cancelRate)} r={4} fill="#f97316" stroke="white" strokeWidth={1.5} />
+          </>}
+        </svg>
+      )}
+
+      {/* Tooltip */}
+      {tooltip && (
+        <div className="pointer-events-none absolute z-10 bg-white border border-gray-200 rounded-xl shadow-lg p-3 text-xs min-w-[180px]"
+          style={{ left: tooltip.x + 40 > chartW * 0.6 ? tooltip.x - 195 : tooltip.x + 16, top: 16 }}>
+          <div className="font-semibold text-gray-800 mb-2">{tooltip.week.weekLabel}</div>
+          <div className="flex items-center justify-between gap-3 py-0.5 border-b border-gray-100 mb-1 pb-2">
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-2.5 rounded-sm inline-block bg-indigo-200" />
+              <span className="text-gray-600">Cohort size</span>
+            </div>
+            <span className="font-bold text-indigo-500">{tooltip.week.total.toLocaleString()}</span>
+          </div>
+          {[
+            { label: 'Refund Rate (15d)', value: tooltip.week.refundRate, count: tooltip.week.refundCount, color: '#ef4444' },
+            { label: 'Cancel Rate (all)', value: tooltip.week.cancelRate, count: tooltip.week.cancelCount, color: '#f97316' },
+          ].map(l => (
+            <div key={l.label} className="flex items-center justify-between gap-3 py-0.5">
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-0.5 rounded inline-block" style={{ backgroundColor: l.color }} />
+                <span className="text-gray-600">{l.label}</span>
+              </div>
+              <div className="text-right">
+                <span className="font-bold" style={{ color: l.color }}>{l.value}%</span>
+                <span className="text-gray-400 ml-1">({l.count.toLocaleString()})</span>
+              </div>
+            </div>
+          ))}
+          {!tooltip.week.isMature && (
+            <div className="mt-2 pt-2 border-t border-gray-100 text-[10px] text-red-400">15-day window not complete</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1411,26 +1547,6 @@ export default function PurchaseCohortsClient() {
         const avgCancel4 = recent4r.length > 0 ? Math.round(recent4r.reduce((s, w) => s + w.cancelRate, 0) / recent4r.length * 10) / 10 : null;
         const refundDelta = avgRefund4 !== null && avgRefundPrev !== null ? Math.round((avgRefund4 - avgRefundPrev) * 10) / 10 : null;
 
-        // Simple SVG line chart for refund rate
-        const chartWeeks = viewedRefundWeeks;
-        const n = chartWeeks.length;
-        const PAD = { top: 16, right: 64, bottom: 48, left: 44 };
-        const H = 220;
-        const W = 760;
-        const innerW = W - PAD.left - PAD.right;
-        const innerH = H - PAD.top - PAD.bottom;
-        const maxRate = Math.max(...chartWeeks.map(w => Math.max(w.refundRate, w.cancelRate)), 5);
-        const yMax = Math.ceil(maxRate / 5) * 5;
-        const xOf = (i: number) => PAD.left + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
-        const yOf = (v: number) => PAD.top + innerH - (v / yMax) * innerH;
-        const yTicks = Array.from({ length: 5 }, (_, i) => Math.round(yMax / 4 * i));
-        const step = Math.max(1, Math.round(n / 7));
-        const xLabels = chartWeeks.map((w, i) => ({ i, label: w.weekLabel })).filter((_, i) => i % step === 0 || i === n - 1);
-        const pathFor = (key: 'refundRate' | 'cancelRate') =>
-          n === 0 ? '' : chartWeeks.map((w, i) => `${i === 0 ? 'M' : 'L'}${xOf(i).toFixed(1)},${yOf(w[key]).toFixed(1)}`).join(' ');
-        const maxVol = Math.max(...chartWeeks.map(w => w.total), 1);
-        const barW = Math.max(3, Math.round(innerW / Math.max(n, 1)) - 3);
-
         return (
           <>
             {/* Summary cards */}
@@ -1509,53 +1625,115 @@ export default function PurchaseCohortsClient() {
                 </div>
               </div>
               <div className="px-5 py-4">
-                {n === 0 ? (
-                  <div className="h-[220px] flex items-center justify-center text-sm text-gray-400">No data</div>
-                ) : (
-                  <svg width={W} height={H} className="w-full">
-                    {/* Grid */}
-                    {yTicks.map(v => (
-                      <g key={v}>
-                        <line x1={PAD.left} y1={yOf(v)} x2={W - PAD.right} y2={yOf(v)} stroke="#f3f4f6" strokeWidth={1} />
-                        <text x={PAD.left - 6} y={yOf(v) + 4} fontSize={10} fill="#9ca3af" textAnchor="end">{v}%</text>
-                      </g>
-                    ))}
-                    {/* Right Y-axis — cohort size */}
-                    {(() => {
-                      const RX = W - PAD.right;
-                      const rightYOf = (v: number) => PAD.top + innerH - (v / maxVol) * innerH;
-                      const rightTicks = [0, Math.round(maxVol / 2), maxVol];
-                      const fmtCount = (v: number) => v >= 1000 ? `${+(v / 1000).toFixed(1)}k` : String(v);
-                      return <>
-                        <line x1={RX} y1={PAD.top} x2={RX} y2={PAD.top + innerH} stroke="#e0e7ff" strokeWidth={1} />
-                        {rightTicks.map(v => (
-                          <g key={v}>
-                            <line x1={RX} y1={rightYOf(v)} x2={RX + 4} y2={rightYOf(v)} stroke="#818cf8" strokeWidth={1} />
-                            <text x={RX + 7} y={rightYOf(v) + 4} fontSize={10} fill="#6366f1" textAnchor="start">{fmtCount(v)}</text>
-                          </g>
-                        ))}
-                        <text x={RX + 7} y={PAD.top - 4} fontSize={9} fill="#a5b4fc" textAnchor="start">users</text>
-                        {/* Volume bars */}
-                        {chartWeeks.map((w, i) => {
-                          const bh = Math.max(1, (w.total / maxVol) * innerH);
-                          return <rect key={i} x={xOf(i) - barW / 2} y={PAD.top + innerH - bh} width={barW} height={bh} fill="#c7d2fe" opacity={0.5} rx={1.5} />;
+                <RefundChart weeks={viewedRefundWeeks} loading={loading} />
+              </div>
+            </div>
+
+            {/* Key finding — Not Applicable funnel */}
+            <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-gray-100">
+                <h2 className="font-semibold text-gray-900">What&apos;s driving the refund rate up?</h2>
+                <p className="text-xs text-gray-500 mt-0.5">Root cause analysis · recent 8 mature weeks</p>
+              </div>
+              <div className="p-5 space-y-4">
+
+                {/* Finding 1 — Quest funnel products */}
+                <div className="border border-red-100 bg-red-50 rounded-xl p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-bold text-red-700 bg-red-100 px-2 py-0.5 rounded-full">Finding 1</span>
+                    <span className="text-sm font-semibold text-gray-800 flex-1">
+                      Quest subscription funnels are driving the increase — qomm +6.2pp, qaap +5.2pp
+                    </span>
+                    <span className="text-xs font-bold text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full whitespace-nowrap">paying customers only</span>
+                  </div>
+                  <p className="text-xs text-gray-600 mb-3">
+                    Excluding trials and non-applicable orders, the overall early-cancel rate for <strong>paying customers is 13.3%</strong> (up +1.0pp). The increase is concentrated in Quest subscription products — <strong>qomm_product rose +6.2pp</strong> to 17.8% and <strong>qaap_product rose +5.2pp</strong> to 13.6%. eb_product (Entrepreneurship &amp; AI) has the highest absolute rate at 19.8%, up +3.9pp. Large funnels like sums, tam, and du are flat or improving.
+                  </p>
+                  <div className="overflow-x-auto -mx-1">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-gray-400 border-b border-red-100">
+                          <th className="text-left pb-1.5 pl-1 font-medium">Funnel</th>
+                          <th className="text-right pb-1.5 font-medium">Buyers</th>
+                          <th className="text-right pb-1.5 font-medium">Early cancel rate</th>
+                          <th className="text-right pb-1.5 pr-1 font-medium">vs prev 8w</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[
+                          { name: 'eb_product',    n: 1410, rate: 19.8, delta: +3.9 },
+                          { name: 'qomm_product',  n: 409,  rate: 17.8, delta: +6.2 },
+                          { name: 'sb_product',    n: 189,  rate: 16.9, delta: +0.8 },
+                          { name: 'qaap_product',  n: 383,  rate: 13.6, delta: +5.2 },
+                          { name: 'du_product',    n: 916,  rate: 13.4, delta: -1.4 },
+                          { name: 'sums_product',  n: 1547, rate: 12.3, delta: -2.3 },
+                          { name: 'tam_product',   n: 1207, rate: 11.0, delta: -1.1 },
+                          { name: 'Not Applicable (New only)', n: 826, rate: 7.4, delta: -2.1 },
+                        ].map(p => {
+                          const rateColor = p.rate >= 18 ? '#dc2626' : p.rate >= 13 ? '#d97706' : '#059669';
+                          const deltaColor = p.delta > 2 ? '#dc2626' : p.delta < -1 ? '#059669' : '#6b7280';
+                          return (
+                            <tr key={p.name} className="border-b border-red-50 last:border-0">
+                              <td className="py-1.5 pl-1 font-medium text-gray-700">{p.name}</td>
+                              <td className="py-1.5 text-right text-gray-400">{p.n.toLocaleString()}</td>
+                              <td className="py-1.5 text-right font-semibold" style={{ color: rateColor }}>{p.rate}%</td>
+                              <td className="py-1.5 text-right pr-1 font-semibold" style={{ color: deltaColor }}>{p.delta > 0 ? '+' : ''}{p.delta}pp</td>
+                            </tr>
+                          );
                         })}
-                      </>;
-                    })()}
-                    {/* Immature shading */}
-                    {(() => {
-                      const fi = chartWeeks.findIndex(w => !w.isMature);
-                      return fi >= 0 ? <rect x={xOf(fi)} y={PAD.top} width={W - PAD.right - xOf(fi)} height={innerH} fill="#fef2f2" opacity={0.6} /> : null;
-                    })()}
-                    {/* X labels */}
-                    {xLabels.map(({ i, label }) => (
-                      <text key={i} x={xOf(i)} y={H - 8} fontSize={10} fill="#9ca3af" textAnchor="middle">{label}</text>
-                    ))}
-                    {/* Lines */}
-                    <path d={pathFor('cancelRate')} fill="none" stroke="#f97316" strokeWidth={2.5} strokeDasharray="6 3" strokeLinejoin="round" strokeLinecap="round" />
-                    <path d={pathFor('refundRate')} fill="none" stroke="#ef4444" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
-                  </svg>
-                )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Finding 2 — Direct traffic spike */}
+                <div className="border border-amber-100 bg-amber-50 rounded-xl p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">Finding 2</span>
+                    <span className="text-sm font-semibold text-gray-800 flex-1">
+                      Direct traffic early-cancel rate spiked +7.9pp — Impact and Email also rising
+                    </span>
+                    <span className="text-xs font-bold text-amber-700 bg-amber-100 border border-amber-200 px-2 py-0.5 rounded-full whitespace-nowrap">16.8% Direct</span>
+                  </div>
+                  <p className="text-xs text-gray-600 mb-3">
+                    Facebook and Google are flat (the majority of paid traffic). The fastest-rising sources are <strong>Direct (+7.9pp to 16.8%)</strong>, <strong>Impact (+4.8pp)</strong>, and <strong>General Email (+4.3pp)</strong> — suggesting affiliate and email campaigns are bringing in buyers with lower intent or mismatched expectations. <strong>App traffic is low and improving</strong> (4.7%, −1.4pp) — paying app buyers tend to be more committed.
+                  </p>
+                  <div className="overflow-x-auto -mx-1">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-gray-400 border-b border-amber-100">
+                          <th className="text-left pb-1.5 pl-1 font-medium">Traffic source</th>
+                          <th className="text-right pb-1.5 font-medium">Buyers</th>
+                          <th className="text-right pb-1.5 font-medium">Early cancel rate</th>
+                          <th className="text-right pb-1.5 pr-1 font-medium">vs prev 8w</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[
+                          { source: 'Direct',         n: 352,  rate: 16.8, delta: +7.9 },
+                          { source: 'General Email',  n: 176,  rate: 14.2, delta: +4.3 },
+                          { source: 'Impact',         n: 232,  rate: 13.8, delta: +4.8 },
+                          { source: 'Google',         n: 1270, rate: 13.4, delta: +1.4 },
+                          { source: 'Facebook',       n: 4149, rate: 13.5, delta: +0.5 },
+                          { source: 'Not Classified', n: 1559, rate: 13.9, delta: -0.9 },
+                          { source: 'App',            n: 338,  rate: 4.7,  delta: -1.4 },
+                        ].map(r => {
+                          const rateColor = r.rate >= 16 ? '#dc2626' : r.rate >= 13 ? '#d97706' : '#059669';
+                          const deltaColor = r.delta > 3 ? '#dc2626' : r.delta < -1 ? '#059669' : '#6b7280';
+                          return (
+                            <tr key={r.source} className="border-b border-amber-50 last:border-0">
+                              <td className="py-1.5 pl-1 font-medium text-gray-700">{r.source}</td>
+                              <td className="py-1.5 text-right text-gray-400">{r.n.toLocaleString()}</td>
+                              <td className="py-1.5 text-right font-semibold" style={{ color: rateColor }}>{r.rate}%</td>
+                              <td className="py-1.5 text-right pr-1 font-semibold" style={{ color: deltaColor }}>{r.delta > 0 ? '+' : ''}{r.delta}pp</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
               </div>
             </div>
 
