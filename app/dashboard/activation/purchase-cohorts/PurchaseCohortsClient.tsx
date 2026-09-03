@@ -944,9 +944,13 @@ export default function PurchaseCohortsClient() {
       <div className="bg-white border border-gray-200 rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold text-gray-900">Filters</h2>
-          {(hasActiveFilters || fromWeek || toWeek) && (
-            <button onClick={resetFilters} className="text-xs text-violet-600 hover:text-violet-800 font-medium">Reset all</button>
-          )}
+          <button
+            onClick={resetFilters}
+            disabled={!hasActiveFilters && !fromWeek && !toWeek}
+            className="text-xs font-medium transition-colors disabled:text-gray-300 disabled:cursor-default text-violet-600 hover:text-violet-800"
+          >
+            Reset all
+          </button>
         </div>
         <div className="flex flex-wrap gap-4">
           {/* Date range */}
