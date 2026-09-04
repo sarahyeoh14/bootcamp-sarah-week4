@@ -364,7 +364,7 @@ export interface WeeklyMetricRow {
   isMature7: boolean;
 }
 
-export const SNAPSHOT_DATE = '2026-09-01';
+export const SNAPSHOT_DATE = '2026-09-02';
 
 export function getWeeklyMetrics(filters: PurchaseFilters = {}): WeeklyMetricRow[] {
   const db = getDb();
