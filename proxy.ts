@@ -1,8 +1,16 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-// The only open route — all other /dashboard/* paths redirect to /locked
-const OPEN_PATH = '/dashboard/activation/purchase-cohorts';
+function getSessionEmail(request: NextRequest): string | null {
+  const raw = request.cookies.get('mv_session')?.value;
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, 'base64').toString('utf-8'));
+    return typeof parsed?.email === 'string' ? parsed.email.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -12,15 +20,14 @@ export function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Product North Star is always open regardless of auth
-  if (pathname.startsWith(OPEN_PATH)) {
+  // Authenticated @mindvalley.com users have access to all dashboard routes
+  const email = getSessionEmail(request);
+  if (email && email.endsWith('@mindvalley.com')) {
     return NextResponse.next();
   }
 
-  // All other dashboard routes are locked — redirect to locked page
-  const locked = new URL('/locked', request.url);
-  locked.searchParams.set('from', pathname);
-  return NextResponse.redirect(locked);
+  // Unauthenticated — redirect to login (dashboard layout will also enforce this)
+  return NextResponse.redirect(new URL('/login', request.url));
 }
 
 export const config = {
