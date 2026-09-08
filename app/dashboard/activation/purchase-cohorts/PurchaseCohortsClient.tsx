@@ -57,6 +57,8 @@ interface SegmentRow {
   baselineDay0LoginPct: number | null;
   baselineDay7LoginPct: number | null;
   baselineDay15ActPct: number | null;
+  refundRate: number | null;
+  baselineRefundRate: number | null;
   firstWeek?: string;
 }
 
@@ -597,10 +599,12 @@ function SegmentComparisonTable({
   groups,
   cols,
   loading,
+  snapshotDate,
 }: {
   groups: SegmentGroup[];
   cols: [SegmentMetricKey, SegmentMetricKey];
   loading: boolean;
+  snapshotDate: string;
 }) {
   if (loading) {
     return (
@@ -666,13 +670,17 @@ function SegmentComparisonTable({
               <div>{cfgB.label}</div>
               <div className="text-[10px] normal-case tracking-normal text-gray-400 font-normal mt-0.5">recent · 12w avg</div>
             </th>
+            <th className="text-right px-4 py-3 font-medium text-rose-600">
+              <div>Refund Rate</div>
+              <div className="text-[10px] normal-case tracking-normal text-gray-400 font-normal mt-0.5">recent · 12w avg</div>
+            </th>
           </tr>
         </thead>
         <tbody>
           {groups.map((group, gi) => (
             <Fragment key={gi}>
               <tr className="bg-gray-50 border-t border-gray-100">
-                <td colSpan={4} className="px-5 py-2">
+                <td colSpan={5} className="px-5 py-2">
                   <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">{group.dimension}</span>
                 </td>
               </tr>
@@ -680,8 +688,7 @@ function SegmentComparisonTable({
                 const groupRecentTotal = group.rows.reduce((s, r) => s + r.total, 0);
                 const groupBaselineTotal = group.rows.reduce((s, r) => s + r.baselineTotal, 0);
                 return group.rows.map((row) => {
-                const SNAPSHOT = '2026-08-26';
-                const snapshotMs = new Date(SNAPSHOT).getTime();
+                const snapshotMs = new Date(snapshotDate || '2026-09-02').getTime();
                 const isNew = row.firstWeek
                   ? (snapshotMs - new Date(row.firstWeek).getTime()) / (1000 * 60 * 60 * 24 * 7) < 13
                   : false;
@@ -743,6 +750,32 @@ function SegmentComparisonTable({
                         lo={cfgB.lo} hi={cfgB.hi}
                         isNew={isNew} isPrimary={true}
                       />
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums align-top pt-3.5">
+                      {row.refundRate === null ? (
+                        <span className="text-gray-300">—</span>
+                      ) : (
+                        <>
+                          <span className={`inline-block px-2 py-0.5 rounded-md text-xs font-semibold ${
+                            row.refundRate <= 2 ? 'text-emerald-600 bg-emerald-50' :
+                            row.refundRate <= 5 ? 'text-amber-600 bg-amber-50' :
+                            'text-red-600 bg-red-50'
+                          }`}>{row.refundRate}%</span>
+                          {row.baselineRefundRate !== null && (() => {
+                            const d = delta(row.refundRate, row.baselineRefundRate);
+                            return (
+                              <div className="text-[11px] text-gray-400 mt-1">
+                                {row.baselineRefundRate}%
+                                {d !== null && d !== 0 && (
+                                  <span className={`ml-1 text-[10px] font-medium ${d > 0 ? 'text-red-500' : 'text-emerald-600'}`}>
+                                    {d > 0 ? '+' : ''}{d}pp
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </>
+                      )}
                     </td>
                   </tr>
                 );
@@ -1146,6 +1179,7 @@ export default function PurchaseCohortsClient() {
           groups={segments}
           cols={isIP ? ['day0LoginPct', 'day7LoginPct'] : ['day7LoginPct', 'day15ActPct']}
           loading={loading}
+          snapshotDate={snapshotDate}
         />
       </div>}
 

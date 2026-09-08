@@ -513,6 +513,9 @@ export interface SegmentRow {
   baselineDay0LoginPct: number | null;
   baselineDay7LoginPct: number | null;
   baselineDay15ActPct: number | null;
+  /** Refund rate (within 15d of purchase) — excludes Trial/Not Applicable */
+  refundRate: number | null;
+  baselineRefundRate: number | null;
   /** YYYY-MM-DD of the earliest week this segment label appears in the dataset */
   firstWeek?: string;
 }
@@ -567,11 +570,15 @@ export function getSegmentComparison(filters: PurchaseFilters = {}, weeksCount =
       COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 AND days_to_login IS NOT NULL AND days_to_login <= 7 THEN user_id END)
       * 100.0 / NULLIF(COUNT(DISTINCT CASE WHEN order_type IN ('New','Trial') AND is_first_order = 1 THEN user_id END), 0)
     , 1) as day7_login,
-    ROUND(COUNT(DISTINCT CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN user_id END) * 100.0 / NULLIF(COUNT(DISTINCT user_id), 0), 1) as day15_act
+    ROUND(COUNT(DISTINCT CASE WHEN days_to_activation IS NOT NULL AND days_to_activation <= 15 THEN user_id END) * 100.0 / NULLIF(COUNT(DISTINCT user_id), 0), 1) as day15_act,
+    ROUND(
+      COUNT(DISTINCT CASE WHEN days_to_refund IS NOT NULL AND days_to_refund <= 15 AND order_type NOT IN ('Trial', 'Not Applicable') THEN user_id END)
+      * 100.0 / NULLIF(COUNT(DISTINCT CASE WHEN order_type NOT IN ('Trial', 'Not Applicable') THEN user_id END), 0)
+    , 1) as refund_rate
   `;
 
-  type RawMetrics = { total: number; login_eligible: number; day0_login: number; day7_login: number; day15_act: number };
-  const EMPTY: RawMetrics = { total: 0, login_eligible: 0, day0_login: 0, day7_login: 0, day15_act: 0 };
+  type RawMetrics = { total: number; login_eligible: number; day0_login: number; day7_login: number; day15_act: number; refund_rate: number };
+  const EMPTY: RawMetrics = { total: 0, login_eligible: 0, day0_login: 0, day7_login: 0, day15_act: 0, refund_rate: 0 };
 
   function toRow(label: string, r: RawMetrics, b: RawMetrics): SegmentRow {
     const eligible = (r.login_eligible ?? 0) > 0;
@@ -587,6 +594,8 @@ export function getSegmentComparison(filters: PurchaseFilters = {}, weeksCount =
       baselineDay0LoginPct: bEligible ? (b.day0_login ?? 0) : null,
       baselineDay7LoginPct: bEligible ? (b.day7_login ?? 0) : null,
       baselineDay15ActPct: b.total > 0 ? (b.day15_act ?? 0) : null,
+      refundRate: r.total > 0 ? (r.refund_rate ?? 0) : null,
+      baselineRefundRate: b.total > 0 ? (b.refund_rate ?? 0) : null,
     };
   }
 
