@@ -273,7 +273,8 @@ export interface PurchaseFilters {
 
 function buildWhere(filters: PurchaseFilters): { where: string; params: unknown[] } {
   // Exclude records with no order_type — data-quality gaps in the export
-  const clauses: string[] = ['order_type IS NOT NULL'];
+  // Exclude Masters of Manifesting — all rows are 'Not Applicable' and skew product breakdown
+  const clauses: string[] = ['order_type IS NOT NULL', `product_name != 'Masters of Manifesting'`];
   const params: unknown[] = [];
 
   if (filters.traffic_source) {
@@ -437,7 +438,7 @@ export interface FilterOptions {
 export function getFilterOptions(): FilterOptions {
   const db = getDb();
   const distinct = (col: string) =>
-    (db.prepare(`SELECT DISTINCT ${col} as v FROM purchase_cohorts WHERE ${col} IS NOT NULL ORDER BY v`).all() as { v: string }[])
+    (db.prepare(`SELECT DISTINCT ${col} as v FROM purchase_cohorts WHERE ${col} IS NOT NULL AND product_name != 'Masters of Manifesting' ORDER BY v`).all() as { v: string }[])
       .map(r => r.v)
       .filter(Boolean);
 
