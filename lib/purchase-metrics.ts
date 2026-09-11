@@ -15,10 +15,10 @@ import path from 'path';
 import fs from 'fs';
 import { getDb } from './db';
 
-const DATA_PATH = path.join(process.cwd(), 'data', 'l52weeks_product_metric_v7.json');
+const DATA_PATH = path.join(process.cwd(), 'data', 'l52weeks_product_metric_v8.json');
 
 // Schema version — bump whenever the table structure changes so the DB is rebuilt.
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -365,7 +365,7 @@ export interface WeeklyMetricRow {
   isMature7: boolean;
 }
 
-export const SNAPSHOT_DATE = '2026-09-02';
+export const SNAPSHOT_DATE = '2026-09-11';
 
 export function getWeeklyMetrics(filters: PurchaseFilters = {}): WeeklyMetricRow[] {
   const db = getDb();
